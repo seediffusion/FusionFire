@@ -20,12 +20,10 @@ You can play a second person over the internet. By default it is quick play via 
 
 ## Fusion Fire setup
 
-### Compiled
+### Compiled releases
 
-Fusion Fire is a portable folder. Unzip it wherever you like and run `FusionFire.exe`. There is nothing to install and no runtime to fight with. The folder holds the executable, an `_internal` folder of libraries, and a `sounds` folder you are welcome to open and modify.
-
-* On Windows 10 and 11 you get everything: speech and braille through whichever screen reader you run, the OneCore and SAPI voices if you have no screen reader running, and a dark mode that follows your Windows setting as you change it.
-* On Windows 8.1 and 7 the game falls back to [accessible_output2](https://pypi.org/project/accessible-output2/), which has talked to NVDA, JAWS, System Access, Window-Eyes, Dolphin and SAPI 5 on those systems for years. Voice, rate and pitch are not offered there, because that library does not provide them and your screen reader owns those settings anyway. Dark mode is a manual choice, because Windows has no setting to follow before 10.
+* [Download Fusion Fire installer](https://github.com/seediffusion/FusionFire/releases/latest/download/Fusion_Fire_Setup.exe)
+* [Download Fusion Fire zip file](https://github.com/seediffusion/FusionFire/releases/latest/download/fusion-fire.zip)
 
 ### Building it yourself
 
@@ -39,8 +37,8 @@ Fusion Fire is a portable folder. Unzip it wherever you like and run `FusionFire
 1. Clone the repository and step into it.
 
     ```
-    git clone https://github.com/seediffusion/fusion-fire
-    cd fusion-fire
+    git clone https://github.com/seediffusion/FusionFire
+    cd FusionFire
     ```
 
 2. install Python if not already installed.
