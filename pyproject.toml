@@ -1,0 +1,70 @@
+[project]
+name = "fusion-fire"
+version = "1.0.0"
+description = "An accessible audio combat game by Seediffusion, ported from X-Sight Interactive's Acefire 2"
+readme = "README.md"
+requires-python = ">=3.13"
+license = { text = "MIT" }
+authors = [{ name = "Seediffusion" }]
+keywords = ["audio game", "accessibility", "blind", "screen reader", "wxpython"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Win32 (MS Windows)",
+    "Intended Audience :: End Users/Desktop",
+    "Topic :: Games/Entertainment",
+    "Topic :: Adaptive Technologies",
+]
+dependencies = [
+    "accessible-output2==0.16",
+    # Speech and braille across every screen reader, plus a platform-TTS
+    # fallback when none is running. 0.17.3 is the current release; see the
+    # encoding note in fusionfire/speech.py before bumping it.
+    "prismatoid>=0.17.3",
+    # Joystick and gamepad only. No window is ever created — SDL runs with
+    # the dummy video driver.
+    "pygame>=2.6.1",
+    # BASS bindings for playback, mixing and the memory-cached sound pool.
+    "sound-lib",
+    "wxpython>=4.3.1",
+]
+
+[project.scripts]
+fusion-fire = "fusionfire.app:main"
+# The relay and spy servers are deliberately not console scripts: they are
+# meant to run on a machine that only has a plain Python install and never
+# installed this package. They live at the repository root as standalone
+# scripts (`srv.py <name> <port> [-P]`, `spy.py [port]`) with no imports
+# beyond the standard library.
+
+[project.urls]
+Homepage = "https://github.com/seedy60/fusion-fire"
+
+[tool.uv.sources]
+sound-lib = { git = "https://github.com/seedy60/sound_lib" }
+
+[dependency-groups]
+dev = [
+    "markdown>=3.10.3",
+    "pyinstaller>=6.22.0",
+    "pytest>=9.1.1",
+    "pytest-timeout>=2.4.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The standalone server scripts live at the repository root and are imported
+# directly by their tests (`import srv`, `import spy`), so the root has to be
+# on the import path.
+pythonpath = ["."]
+# The online tests open real sockets and complete real TLS handshakes; a
+# hung one should fail loudly rather than stall the run.
+timeout = 120
+timeout_method = "thread"
+filterwarnings = ["error::DeprecationWarning:fusionfire.*"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["fusionfire"]

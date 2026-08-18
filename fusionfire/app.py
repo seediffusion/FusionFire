@@ -1,0 +1,747 @@
+"""Application wiring.
+
+:class:`AppContext` owns everything with a lifetime longer than a match —
+settings, audio, speech, gamepad, statistics — and is the single object the
+panels talk to when they need something outside themselves. The wx.App below
+builds it, shows the frame and tears it all down again in order.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import logging
+import logging.handlers
+import sys
+
+import wx
+
+from . import __title__, __version__, assets, paths
+from .audio import NULL_HANDLE, AudioEngine
+from .config import Settings, Stats
+from .game import greetings, names
+from .game.constants import Phase, Side
+from .game.engine import Combatant, Engine
+from .game.difficulty import get as get_difficulty
+from .input.actions import Action
+from .input.gamepad import GamepadManager
+from .presenter import Presenter
+from .speech import open_speech
+from .ui.navigator import Navigator
+
+log = logging.getLogger(__name__)
+
+
+def configure_logging(verbose: bool = False) -> None:
+    """Rotating log in the user data folder. Never in the install directory."""
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG if verbose else logging.INFO)
+    if root.handlers:
+        return
+    try:
+        handler = logging.handlers.RotatingFileHandler(
+            paths.log_file(), maxBytes=512 * 1024, backupCount=2, encoding="utf-8"
+        )
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s")
+        )
+        root.addHandler(handler)
+    except OSError:
+        pass
+    if verbose:
+        root.addHandler(logging.StreamHandler(sys.stderr))
+
+
+class _AnyModal:
+    """Stands in for a modal the game holds no object for.
+
+    A wx message box is built, shown and destroyed inside a single call, so
+    there is nothing to hand the pad. This has neither a ``handle_action``
+    nor a ``gamepad_navigation``, which is exactly the wanted behaviour: the
+    pad navigates the box, and nothing it does can reach the match waiting
+    behind it.
+    """
+
+    __slots__ = ()
+
+
+_ANY_MODAL = _AnyModal()
+
+
+class AppContext:
+    """Long-lived services, and the transitions between screens."""
+
+    def __init__(self, settings: Settings | None = None) -> None:
+        # The app may have loaded these already, to set the window
+        # appearance before any window existed.
+        self.settings = settings if settings is not None else Settings.load()
+        self.stats = Stats.load()
+        self.audio = AudioEngine(self.settings)
+        self.speech = open_speech(self.settings)
+        self.presenter = Presenter(self.audio, self.speech, self.settings)
+        self.gamepad = GamepadManager(self.settings, self._gamepad_action)
+        self.navigator = Navigator()
+        self.frame = None
+        self.engine: Engine | None = None
+        self.net = None
+        self._modal_input_target = None
+        self._online_dialog = None
+        #: True while a disconnection we caused is still on its way back to
+        #: us through the session's callback.
+        self._expect_disconnect = False
+        #: Set in start(), once there is a wx.App and a frame to theme.
+        self.theme = None
+        #: True while the launch jingle is holding the front menu back.
+        self._intro_pending = False
+        self._intro_timer = None
+
+    # ------------------------------------------------------------------
+    # Startup
+    # ------------------------------------------------------------------
+    def start(self) -> None:
+        from .ui.main_frame import MainFrame
+        from .ui.theme import ThemeWatcher
+
+        self.frame = MainFrame(self)
+        # Before the frame is shown, so it comes up in the right colours
+        # rather than flashing white first.
+        self.theme = ThemeWatcher(wx.GetApp(), self.settings)
+        self.theme.attach(self.frame)
+        self.frame.Show()
+
+        missing = assets.verify()
+        if missing:
+            self.presenter.report(
+                f"Warning: {len(missing)} sound files are missing. "
+                "The game will run but some effects will be silent."
+            )
+
+        if self.settings.gamepad_enabled:
+            self.gamepad.start()
+
+        greeting = greetings.for_today(self.settings.birthday)
+        if greeting is not None:
+            self.show_menu()
+            if greeting.music:
+                self.audio.play_music(greeting.music, looping=False)
+            self.presenter.report(greeting.text)
+        elif self.settings.play_intro_music:
+            self._begin_launch_intro()
+        else:
+            self.show_menu()
+            self.presenter.report(
+                f"{__title__} {__version__} ready. Choose an option from the menu."
+            )
+
+    def _begin_launch_intro(self) -> None:
+        """Play the launch jingle, holding the front menu back until it is
+        skipped with Enter or plays out on its own.
+
+        The jingle is an event piece rather than background score, so it
+        plays even when the in-match music toggle is off; this setting is
+        its own switch. If nothing actually starts playing (no audio device,
+        missing file), the menu comes up right away with the spoken ready
+        message instead.
+        """
+        self.audio.play_music("intro", looping=False)
+        if not self.audio.playing_music("intro"):
+            self.show_menu()
+            self.presenter.report(
+                f"{__title__} {__version__} ready. Choose an option from the menu."
+            )
+            return
+        self._intro_pending = True
+        self.frame.show_intro()
+        duration = self.audio.length_of("intro")
+        # Just after the last note, so the track's ending is not cut off.
+        self._intro_timer = wx.CallLater(
+            int(max(0.0, duration) * 1000) + 300, self._intro_played_out
+        )
+
+    def _intro_played_out(self) -> None:
+        """The jingle ended on its own; put the front menu up."""
+        if not self._intro_pending:
+            return
+        self._intro_pending = False
+        self._intro_timer = None
+        self.frame.end_intro()
+        self.show_menu()
+
+    def skip_intro_music(self) -> bool:
+        """Stop the launch jingle. True if it was actually playing.
+
+        The caller consumes the keypress that ended it rather than treating
+        it as a menu choice. While the jingle is holding the front menu
+        back, skipping it also brings the menu up.
+        """
+        if not self.audio.playing_music("intro"):
+            return False
+        self.audio.stop_music(fade=0.0)
+        if self._intro_pending:
+            self._intro_pending = False
+            if self._intro_timer is not None:
+                self._intro_timer.Stop()
+                self._intro_timer = None
+            self.frame.end_intro()
+            self.show_menu()
+        return True
+
+    def apply_theme(self) -> bool:
+        """Put the chosen theme into effect. False if a restart is needed
+        for the window chrome to follow."""
+        if self.theme is None:
+            return True
+        return self.theme.apply()
+
+    def apply_gamepad_setting(self) -> None:
+        if self.settings.gamepad_enabled:
+            self.gamepad.start()
+        else:
+            self.gamepad.stop()
+
+    # ------------------------------------------------------------------
+    # Screen transitions
+    # ------------------------------------------------------------------
+    def show_menu(self) -> None:
+        from .ui.main_frame import MenuPanel
+
+        self.engine = None
+        self.audio.stop_all_ambience()
+        self.frame.swap_content(MenuPanel(self.frame, self))
+        self.frame.set_status("Main menu.")
+
+    def menu_choice(self, key: str) -> None:
+        handlers = {
+            "offline": self.start_offline,
+            "online": self.start_online,
+            "stats": self.show_stats,
+            "settings": self.show_settings,
+            "help": lambda: self.frame.show_help(),
+            "about": lambda: self.frame.show_about(),
+            "exit": lambda: self.frame.Close(),
+        }
+        handler = handlers.get(key)
+        if handler is not None:
+            handler()
+
+    def show_stats(self) -> None:
+        from .ui.main_frame import StatsPanel
+
+        self.frame.swap_content(StatsPanel(self.frame, self))
+        self.frame.set_status("Statistics.")
+
+    def show_settings(self) -> None:
+        from .ui.settings_dialog import SettingsDialog
+
+        dialog = SettingsDialog(self.frame, self)
+        try:
+            dialog.ShowModal()
+        finally:
+            dialog.Destroy()
+
+    def reset_stats(self) -> None:
+        self.stats = Stats()
+        self.stats.save()
+
+    # ------------------------------------------------------------------
+    # Offline match
+    # ------------------------------------------------------------------
+    def _ensure_character(self) -> bool:
+        """Ask who the player is, once. Returns False if they backed out."""
+        if self.settings.player_name:
+            return True
+
+        from .ui.setup_dialog import SetupDialog
+
+        dialog = SetupDialog(self.frame, self.settings)
+        try:
+            if dialog.ShowModal() != wx.ID_OK or dialog.choice is None:
+                return False
+            dialog.apply_to(self.settings)
+            self.settings.save()
+            self.presenter.report(dialog.choice.announcement())
+        finally:
+            dialog.Destroy()
+        return True
+
+    def start_offline(self) -> None:
+        if not self._ensure_character():
+            return
+
+        from .ui.setup_dialog import OpponentDialog
+
+        dialog = OpponentDialog(self.frame, self.settings)
+        try:
+            if dialog.ShowModal() != wx.ID_OK or dialog.selected is None:
+                return
+            difficulty = dialog.selected
+        finally:
+            dialog.Destroy()
+        self.settings.save()
+
+        # The machine is entitled to say no, and is grumpier at mealtimes.
+        excuse = greetings.maybe_refuse()
+        if excuse is not None:
+            self.presenter.report(f"{excuse} Try again in a moment.")
+            self.audio.play("error")
+            return
+
+        self._launch_match(difficulty)
+
+    def _launch_match(self, difficulty) -> None:
+        from .ui.game_panel import GamePanel
+
+        player = Combatant(name=self.settings.player_name, gender=self.settings.player_gender)
+        opponent = Combatant(name=names.random_machine_name(), gender="male")
+        self.engine = Engine(player, opponent, difficulty)
+
+        panel = GamePanel(self.frame, self, self.engine)
+        self.frame.swap_content(panel)
+        self.frame.set_status(f"Fighting {opponent.name} on {difficulty.label}.")
+        panel.begin()
+
+    def restart_match(self) -> None:
+        self._launch_match(get_difficulty(self.settings.difficulty))
+
+    def leave_match(self) -> None:
+        if self.engine is not None:
+            self.presenter.render(self.engine.abandon())
+        net, self.net = self.net, None
+        if net is not None:
+            # That reason is written for the other player, because they are
+            # the one it is sent to. Closing hands the same string back to
+            # us through the disconnect callback, so the fact that this one
+            # is ours is noted first -- otherwise the player who just quit,
+            # or who just won, is solemnly informed that their opponent
+            # left the game.
+            self._expect_disconnect = True
+            net.close("Your opponent left the game.")
+        self.show_menu()
+
+    # ------------------------------------------------------------------
+    # Online match
+    # ------------------------------------------------------------------
+    def start_online(self) -> None:
+        if not self._ensure_character():
+            return
+
+        from .net.session import HostSession, JoinSession, RelaySession
+        from .ui.online_dialog import OnlineDialog, WaitingDialog
+
+        dialog = OnlineDialog(self.frame, self.settings)
+        try:
+            if dialog.ShowModal() != wx.ID_OK:
+                return
+            connection, host, port, passphrase = (
+                dialog.connection, dialog.host, dialog.port, dialog.passphrase
+            )
+            secure = dialog.secure
+            hosting = connection == "p2p" and dialog.hosting
+        finally:
+            dialog.Destroy()
+        self.settings.save()
+
+        if connection == "relay":
+            session_class: type = RelaySession
+        elif hosting:
+            session_class = HostSession
+        else:
+            session_class = JoinSession
+        self.net = session_class(
+            on_message=lambda m: wx.CallAfter(self._on_net_message, m),
+            on_connected=lambda: wx.CallAfter(self._on_net_connected),
+            on_disconnected=lambda r: wx.CallAfter(self._on_net_disconnected, r),
+        )
+
+        if connection == "relay":
+            waiting_text = (
+                f"Connecting to the relay server {host} on port {port}...\n\n"
+                "You will be told which player is the host."
+            )
+        elif hosting:
+            if secure:
+                waiting_text = (
+                    f"Waiting for an opponent on port {port}.\n\n"
+                    "Give them your address and the passphrase."
+                )
+            else:
+                waiting_text = (
+                    f"Waiting for an opponent on port {port}.\n\n"
+                    "Give them your address. They just dial it, no passphrase."
+                )
+        else:
+            waiting_text = f"Connecting to {host} on port {port}..."
+        self._online_dialog = WaitingDialog(self.frame, waiting_text)
+        self.audio.play_music("connecting", looping=True)
+        self.presenter.report(waiting_text.replace("\n", " "))
+
+        try:
+            if connection == "relay":
+                self.net.connect_relay(host, port, passphrase, secure=secure)
+            elif hosting:
+                self.net.listen(port=port, passphrase=passphrase, secure=secure)
+            else:
+                self.net.connect(host, port, passphrase, secure=secure)
+        except (OSError, ValueError) as exc:
+            self._close_waiting()
+            self.audio.stop_music()
+            self.presenter.report(f"Could not start the online game: {exc}")
+            self.net = None
+            return
+
+        if self._online_dialog.ShowModal() == wx.ID_CANCEL and self.net is not None:
+            self.net.close("Cancelled.")
+            self.net = None
+            self.audio.stop_music()
+        self._close_waiting()
+
+    def _close_waiting(self) -> None:
+        dialog, self._online_dialog = self._online_dialog, None
+        if dialog is None:
+            return
+        try:
+            if dialog.IsModal():
+                dialog.EndModal(wx.ID_OK)
+            dialog.Destroy()
+        except RuntimeError:
+            pass
+
+    def _on_net_connected(self) -> None:
+        self.audio.stop_music()
+        self._close_waiting()
+        self.net.send(
+            "hello",
+            version=1,
+            name=self.settings.player_name,
+            gender=self.settings.player_gender,
+        )
+        self.presenter.report("Connected. Waiting for your opponent's details.")
+
+    def _match_finished(self) -> bool:
+        """True once the match has reached its own ending.
+
+        The two engines each reach it independently, from the same strike.
+        Whatever arrives from the other end afterwards is therefore an echo
+        of something already known, and the screen must not be torn down on
+        the strength of it -- the result dialog is still waiting behind the
+        win or lose piece.
+        """
+        return self.engine is not None and self.engine.phase is Phase.FINISHED
+
+    def _on_net_message(self, message: dict) -> None:
+        kind = message.get("type")
+        if kind == "hello":
+            self._begin_online_match(message["name"], message["gender"])
+        elif kind == "chat":
+            # By name, the way every other line about them is. "Opponent
+            # says" told the player nothing they did not already know, and
+            # in a game where the machine is called Kernel Panic and the
+            # other player picked their own name, it is the one line that
+            # refused to use it. The fallback covers a chat arriving before
+            # the hello that names them, which no ordinary match produces.
+            who = self.engine.opponent.name if self.engine else "Your opponent"
+            self.presenter.report(f"{who} says: {message['text']}")
+        elif kind == "comment":
+            self.audio.play(f"comment_{message['key']}", pan=0.25)
+        elif kind == "laugh":
+            from .assets import laugh_group
+
+            gender = self.engine.opponent.gender if self.engine else "male"
+            self.audio.play_one_of(laugh_group(gender), pan=0.25)
+        elif kind == "resign":
+            if self._match_finished():
+                # Not a resignation: the peer announcing the ending we have
+                # already reached ourselves. Acting on it dropped both
+                # players back at the menu the moment an online match
+                # finished, taking the win or lose dialog with it -- both
+                # ends send this, so both ends were kicked out. It stays on
+                # the wire as the safety net it is for a peer whose engine
+                # never got there, which is the only case left that needs
+                # telling.
+                log.debug("Peer reported the finish we already have: %r",
+                          message.get("reason"))
+                return
+            reason = message.get("reason") or "Your opponent left the game."
+            self.presenter.report(reason)
+            self.leave_match()
+        elif self.engine is not None:
+            self._apply_remote_move(message)
+
+    def _begin_online_match(self, opponent_name: str, opponent_gender: str) -> None:
+        if self.engine is not None:
+            return  # a duplicate hello; ignore it
+
+        from .ui.game_panel import GamePanel
+
+        player = Combatant(name=self.settings.player_name, gender=self.settings.player_gender)
+        opponent = Combatant(name=opponent_name, gender=opponent_gender)
+        self.engine = Engine(
+            player, opponent, get_difficulty(self.settings.difficulty), online=True
+        )
+
+        panel = GamePanel(self.frame, self, self.engine, net=self.net)
+        self.frame.swap_content(panel)
+        self.frame.set_status(f"Online against {opponent_name}.")
+        # The host moves first, deterministically, so both ends agree on the
+        # turn order without needing a round trip to negotiate it. For a
+        # relayed match the relay assigns the roles by arrival order.
+        first = Side.PLAYER if self.net.is_host else Side.OPPONENT
+        panel.begin(first=first)
+
+    def _apply_remote_move(self, message: dict) -> None:
+        """Render the opponent's action, which they have already resolved."""
+        from .game.constants import Outcome, Weapon
+        from .game.engine import Strike
+        from .game.events import EventLog
+
+        kind = message["type"]
+        log_ = EventLog()
+
+        if kind == "strike":
+            weapon = Weapon(message["weapon"])
+            outcome = Outcome(message["outcome"])
+            log_.sound({"gun": "computergun", "whip": "computerwhip", "bomb": "computerbomb"}[weapon.value])
+            strike = Strike(Side.OPPONENT, weapon, outcome, message["damage"])
+            self.engine._resolve(strike, log_)
+            self.presenter.render(self.engine._end_turn(log_))
+        elif kind == "heal":
+            self.engine.opponent.heal(message["amount"])
+            log_.group("computerrestore")
+            log_.say(
+                f"{self.engine.opponent.name} restores {message['amount']} health.",
+                after="computerrestore",
+            )
+            self.presenter.render(self.engine._end_turn(log_))
+        elif kind == "load":
+            # Loading is a free action on both sides. Ending the turn here
+            # would advance this engine while the sender's stayed put, and
+            # the two would be arguing about whose go it is from then on.
+            self.engine.opponent.gun_loaded = True
+            log_.sound("computerload")
+            self.presenter.render(log_.drain())
+
+    def _on_net_disconnected(self, reason: str) -> None:
+        self._close_waiting()
+        self.net = None
+        ours, self._expect_disconnect = self._expect_disconnect, False
+        if ours:
+            # We hung up. The reason travelled to the other player; it is
+            # not news for this one.
+            return
+        if self._match_finished():
+            # The end of the conversation, not news. Whichever player closes
+            # their result dialog first hangs up, and the other one is very
+            # likely still reading theirs: reporting this would talk over the
+            # ending, stopping the music would cut the win piece off, and
+            # leaving the match would destroy the panel the dialog is
+            # parented to while it is still on screen.
+            log.debug("Peer hung up after the match finished: %s", reason)
+            return
+        self.audio.stop_music()
+        self.presenter.report(reason)
+        if self.engine is not None and self.engine.online:
+            self.leave_match()
+
+    # ------------------------------------------------------------------
+    # Input routing
+    # ------------------------------------------------------------------
+    def set_modal_input_target(self, target) -> None:
+        """Point the gamepad at a modal dialog while one is up."""
+        self._modal_input_target = target
+        self.refresh_input_mode()
+
+    @contextlib.contextmanager
+    def modal_input(self, target=None):
+        """Hand the pad to a modal dialog for as long as it is up.
+
+        Without this, a button pressed while a dialog was open still went to
+        the match behind it — so answering the comment dialog with a pad
+        fired the gun. Restores whatever held the input before rather than
+        clearing it, so a dialog opened from a dialog gives it back to the
+        right one.
+        """
+        previous = self._modal_input_target
+        self.set_modal_input_target(_ANY_MODAL if target is None else target)
+        try:
+            yield
+        finally:
+            self.set_modal_input_target(previous)
+
+    def refresh_input_mode(self) -> None:
+        """Tell the pad whether it is fighting or navigating.
+
+        Called from :meth:`MainFrame.swap_content` and whenever a modal
+        claims the input, so the mode follows the screen rather than being
+        set by hand at each transition and forgotten at one of them.
+
+        A surface says which it is by setting ``gamepad_navigation``.
+        Anything that does not say is treated as a menu, which is the safe
+        way round: a stray navigation keystroke moves a highlight, while a
+        stray combat action costs a turn.
+        """
+        target = self._modal_input_target
+        if target is None and self.frame is not None:
+            target = self.frame.content
+        self.gamepad.set_navigation(bool(getattr(target, "gamepad_navigation", True)))
+
+    def _gamepad_action(self, action: Action, navigation: bool) -> None:
+        """Called on the gamepad thread; hop to the UI thread before acting."""
+        wx.CallAfter(self._dispatch_action, action, navigation)
+
+    def _dispatch_action(self, action: Action, navigation: bool = False) -> None:
+        if navigation:
+            # Produced while a menu or dialog was up, so it is a keystroke
+            # for whatever holds focus rather than something the match
+            # should ever see.
+            self.navigator.dispatch(action)
+            return
+
+        target = self._modal_input_target
+        if target is not None:
+            handler = getattr(target, "handle_action", None)
+            if callable(handler):
+                try:
+                    handler(action)
+                except Exception:
+                    log.exception("Modal gamepad handler failed.")
+            return
+
+        content = self.frame.content if self.frame else None
+        handler = getattr(content, "handle_action", None)
+        if callable(handler):
+            try:
+                handler(action)
+            except Exception:
+                log.exception("Gamepad handler failed.")
+
+    # ------------------------------------------------------------------
+    # Results and shutdown
+    # ------------------------------------------------------------------
+    def record_strike(self, event) -> None:
+        """Tally one resolved attack.
+
+        Recording pauses entirely while statistics are switched off, and
+        whatever was banked before the pause is left alone — the contract the
+        original documented for the backspace key.
+        """
+        if not self.settings.stats_enabled:
+            return
+
+        stats = self.stats
+        mine = event.attacker is Side.PLAYER
+        hit = event.outcome == "hit"
+
+        if event.weapon == "gun" and mine:
+            stats.shots_fired += 1
+            stats.shots_hit += hit
+        elif event.weapon == "whip" and mine:
+            stats.lashes += 1
+            stats.lashes_hit += hit
+        elif event.weapon == "bomb" and mine:
+            stats.bombs_used += 1
+        elif event.weapon == "power_weapon":
+            stats.power_weapons_fired += 1
+            if event.outcome == "backfire":
+                stats.power_weapon_backfires += 1
+
+        if event.damage:
+            if event.victim is Side.OPPONENT:
+                stats.damage_dealt += event.damage
+            else:
+                stats.damage_taken += event.damage
+
+    def record_result(self, engine: Engine, winner: Side) -> None:
+        if not self.settings.stats_enabled:
+            return
+        self.stats.games_played += 1
+        if winner is Side.PLAYER:
+            self.stats.games_won += 1
+        else:
+            self.stats.games_lost += 1
+        points = engine.player.points
+        self.stats.total_points += points
+        self.stats.best_points = max(self.stats.best_points, points)
+        self.stats.save()
+
+    def begin_exit(self) -> float:
+        """Start the exit music and report how long it runs, in seconds.
+
+        Split out from :meth:`shutdown` because the two cannot happen at
+        once: shutdown frees the audio device, which cut the exit music off
+        the instant it started. The frame plays this, waits, and only then
+        tears everything down.
+        """
+        try:
+            self.audio.stop_all_ambience()
+            self.audio.stop_music(fade=0.3)
+        except Exception:
+            pass
+        try:
+            self.speech.stop()
+        except Exception:
+            pass
+        try:
+            handle = self.audio.play("exit", bus="music")
+            if handle is NULL_HANDLE:
+                return 0.0
+            return self.audio.length_of("exit")
+        except Exception:
+            log.debug("Could not play the exit music.", exc_info=True)
+            return 0.0
+
+    def shutdown(self) -> None:
+        self._intro_pending = False
+        if self._intro_timer is not None:
+            self._intro_timer.Stop()
+            self._intro_timer = None
+        try:
+            if self.net is not None:
+                self.net.close("Closing the game.")
+        except Exception:
+            pass
+        try:
+            self.gamepad.stop()
+        except Exception:
+            pass
+        try:
+            self.settings.save()
+            self.stats.save()
+        except Exception:
+            log.exception("Could not save on exit.")
+        try:
+            self.speech.shutdown()
+        except Exception:
+            pass
+        try:
+            self.audio.shutdown()
+        except Exception:
+            pass
+
+
+class FusionFireApp(wx.App):
+    def OnInit(self) -> bool:  # noqa: N802 - wx naming
+        self.SetAppName(__title__)
+
+        # Before anything creates a window. wxWidgets can only switch the
+        # native light/dark appearance while none exists -- afterwards the
+        # call is accepted and does nothing, leaving a white window on a
+        # dark desktop. So the settings are loaded here, early, purely to
+        # answer this one question, and handed to the context rather than
+        # being read twice.
+        from .ui.theme import apply_to_app
+
+        settings = Settings.load()
+        apply_to_app(self, settings.theme)
+
+        self.ctx = AppContext(settings)
+        self.ctx.start()
+        self.SetTopWindow(self.ctx.frame)
+        return True
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    configure_logging(verbose="--verbose" in argv or "-v" in argv)
+    log.info("Starting %s %s", __title__, __version__)
+    app = FusionFireApp(redirect=False)
+    app.MainLoop()
+    return 0
