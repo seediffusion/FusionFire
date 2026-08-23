@@ -39,14 +39,26 @@ class Recorder:
         self.disconnected = threading.Event()
         self.got_message = threading.Event()
         self.reason = ""
+        #: Progress lines, and whether each arrived before the connection
+        #: completed -- which is the whole point of them.
+        self.status: list[str] = []
+        self.status_before_connected: list[str] = []
+        self.said_something = threading.Event()
 
     def bind(self, session_class, **kwargs):
         return session_class(
             on_message=self._message,
             on_connected=self.connected.set,
             on_disconnected=self._down,
+            on_status=self._status,
             **kwargs,
         )
+
+    def _status(self, text: str) -> None:
+        self.status.append(text)
+        if not self.connected.is_set():
+            self.status_before_connected.append(text)
+        self.said_something.set()
 
     def _message(self, message: dict) -> None:
         self.messages.append(message)
@@ -228,6 +240,89 @@ def _reopen_a_finished_room(relay_port: int) -> None:
         )
     finally:
         again.close()
+
+
+# ----------------------------------------------------------------------
+# What the player is told while they wait
+#
+# The reported problem: the dialog said "connecting" from the moment you
+# pressed OK until your opponent turned up, which for a host is a wait on
+# another human being. Players concluded their client or the server had
+# hung. The relay assigns the role within milliseconds; from then on the
+# wait has to be described as what it is.
+# ----------------------------------------------------------------------
+def test_the_host_is_told_it_is_waiting_on_a_person(relay_port):
+    """And told it *before* an opponent shows up, not afterwards."""
+    first = Recorder()
+    one = first.bind(RelaySession)
+    try:
+        one.connect_relay("127.0.0.1", relay_port, generate_passphrase(), secure=False)
+
+        assert first.said_something.wait(15), "the host was told nothing at all"
+        assert not first.connected.is_set(), "there is no opponent yet to be connected to"
+
+        said = " ".join(first.status_before_connected).lower()
+        assert "host" in said, f"the host was not told its role: {first.status}"
+        assert "waiting" in said, (
+            f"the host was not told it is waiting rather than connecting: {first.status}"
+        )
+    finally:
+        one.close()
+
+
+def test_the_wait_a_host_is_told_about_has_an_end(relay_port):
+    """"Waiting" with no limit is what reads as "hung". The relay does give
+    up, so the player is told when."""
+    first = Recorder()
+    one = first.bind(RelaySession)
+    try:
+        one.connect_relay("127.0.0.1", relay_port, generate_passphrase(), secure=False)
+        assert first.said_something.wait(15)
+
+        said = " ".join(first.status_before_connected)
+        assert "minutes" in said, f"the wait was left open-ended: {first.status}"
+    finally:
+        one.close()
+
+
+def test_the_joiner_is_told_its_role_as_well(relay_port):
+    passphrase = generate_passphrase()
+    first, second = Recorder(), Recorder()
+    one, two = first.bind(RelaySession), second.bind(RelaySession)
+    try:
+        one.connect_relay("127.0.0.1", relay_port, passphrase, secure=False)
+        assert first.said_something.wait(15)
+        two.connect_relay("127.0.0.1", relay_port, passphrase, secure=False)
+        assert second.said_something.wait(15)
+
+        assert "joiner" in " ".join(second.status).lower(), second.status
+    finally:
+        one.close()
+        two.close()
+
+
+def test_a_session_with_nowhere_to_report_still_works(relay_port):
+    """on_status is optional, and every existing caller omits it."""
+    passphrase = generate_passphrase()
+    first, second = Recorder(), Recorder()
+    one = RelaySession(
+        on_message=lambda m: None,
+        on_connected=first.connected.set,
+        on_disconnected=lambda r: None,
+    )
+    two = second.bind(RelaySession)
+    try:
+        one.connect_relay("127.0.0.1", relay_port, passphrase, secure=False)
+        time.sleep(0.2)
+        two.connect_relay("127.0.0.1", relay_port, passphrase, secure=False)
+        # Only the joiner is connected outright; a casual host waits for its
+        # opponent's first frame, so there has to be one to wait for.
+        assert second.connected.wait(25), "the joiner never connected"
+        two.send("hello", version=1, name="Joiner", gender="male")
+        assert first.connected.wait(25), "a session without a status callback never connected"
+    finally:
+        one.close()
+        two.close()
 
 
 def test_a_third_player_is_refused_a_full_room(relay_port):

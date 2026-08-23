@@ -234,10 +234,12 @@ class NetSession:
         on_message: Callable[[dict], None],
         on_connected: Callable[[], None],
         on_disconnected: Callable[[str], None],
+        on_status: Callable[[str], None] | None = None,
     ) -> None:
         self._on_message = on_message
         self._on_connected = on_connected
         self._on_disconnected = on_disconnected
+        self._on_status = on_status
 
         self._sock: ssl.SSLSocket | None = None
         self._listener: socket.socket | None = None
@@ -259,6 +261,27 @@ class NetSession:
         #: launched the game.
         self._peer_gate = False
         self._waiting_for_peer = False
+
+    # ------------------------------------------------------------------
+    def _status(self, text: str) -> None:
+        """Say what this connection is waiting on, while it waits.
+
+        The other callbacks are events and fire once each. Between them a
+        session can sit for minutes with nothing to show -- a relay host is
+        told it is the host the instant it dials in, and then waits on
+        another person to launch their game. With nothing reporting that,
+        the player is left watching one unchanging "connecting" line and
+        reasonably concludes their client or the server has hung.
+
+        Optional, so a caller with nowhere to put the news is not obliged to
+        invent somewhere.
+        """
+        if self._on_status is None:
+            return
+        try:
+            self._on_status(text)
+        except Exception:
+            log.exception("Status callback failed.")
 
     # ------------------------------------------------------------------
     @property
@@ -536,6 +559,8 @@ class HostSession(NetSession):
                     self._shutdown(f"Stopped listening: {exc}")
                 return
 
+            if secure:
+                self._status("Someone connected. Checking the passphrase...")
             # One opponent only. Close the door behind them so a second
             # connection cannot queue up behind the first.
             try:
@@ -614,6 +639,11 @@ class JoinSession(NetSession):
             self._shutdown(f"Could not reach {host} on port {port}: {exc}")
             return
 
+        # Only worth saying when something follows it. Casual play is
+        # connected the instant the socket is, and the announcement would be
+        # spoken over by the one that says so.
+        if secure:
+            self._status("Reached them. Checking the passphrase...")
         if not secure:
             # Casual play: the host accepted us, so the match is on.
             raw.settimeout(READ_POLL)
@@ -735,6 +765,19 @@ class RelaySession(NetSession):
             return
 
         self._is_host = role == ROLE_HOST
+        # The point at which the old dialog stopped telling the truth. From
+        # here the relay has done its part and the wait is on a person, so
+        # the wait is named and bounded rather than left looking like a
+        # connection that never completes.
+        if self._is_host:
+            minutes = int(ROOM_WAIT_TIMEOUT // 60)
+            self._status(
+                "Connected as the host. Waiting for your opponent to join, "
+                f"for up to {minutes} minutes."
+            )
+        else:
+            self._status("Connected as the joiner. Starting the match...")
+
         if not secure:
             # Casual play: the relay has already paired the room, so the
             # socket is live. The host's role byte may have arrived long

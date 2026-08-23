@@ -483,7 +483,14 @@ class OnlineDialog(wx.Dialog):
 
 
 class WaitingDialog(wx.Dialog):
-    """Shown while a connection is being established. Cancel closes it."""
+    """Shown while a connection is being established. Cancel closes it.
+
+    The text is not fixed. Setting up an online match has stages, and the
+    long one is waiting on another person, so the session reports what it is
+    doing and :meth:`set_text` puts it here. A screen reader does not
+    announce a static text changing under it, which is why the application
+    speaks each step as well as showing it.
+    """
 
     def __init__(self, parent: wx.Window, text: str) -> None:
         super().__init__(parent, title="Connecting", style=wx.CAPTION | wx.SYSTEM_MENU)
@@ -505,7 +512,11 @@ class WaitingDialog(wx.Dialog):
 
     def set_text(self, text: str) -> None:
         self.label.SetLabel(text)
+        # SetLabel replaces the newlines Wrap put in, so the wrapping has to
+        # be redone or a longer line runs off the side of the dialog.
+        self.label.Wrap(400)
         self.Layout()
+        self.Fit()
 
 
 class ServerListDialog(wx.Dialog):

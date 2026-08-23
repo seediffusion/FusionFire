@@ -2464,6 +2464,110 @@ def online_match(app_ctx, monkeypatch):
 
 
 # ----------------------------------------------------------------------
+# Progress while connecting
+#
+# The dialog used to say "connecting" from OK until the opponent arrived,
+# which for a host is a wait on another person. Players read that as a hung
+# client or a broken server. test_relay.py checks the session reports each
+# step; these check the application does something with it.
+# ----------------------------------------------------------------------
+def test_a_connection_step_is_shown_and_spoken(app_ctx):
+    """Both halves. The dialog is what a sighted player watches, and speech
+    is the only way a screen reader hears about it -- a static text changing
+    under you is announced by nothing at all."""
+    from fusionfire.ui.online_dialog import WaitingDialog
+
+    heard = _listen(app_ctx)
+    dialog = WaitingDialog(app_ctx.frame, "Connecting...")
+    app_ctx._online_dialog = dialog
+    try:
+        app_ctx._on_net_status("Connected as the host. Waiting for your opponent.")
+
+        assert dialog.label.GetLabel().startswith("Connected as the host")
+        assert heard.spoken == ["Connected as the host. Waiting for your opponent."]
+    finally:
+        app_ctx._online_dialog = None
+        dialog.Destroy()
+
+
+def test_the_same_step_is_not_said_twice(app_ctx):
+    """A repeat is not news, and speaking it again talks over whatever the
+    player was listening to."""
+    heard = _listen(app_ctx)
+    app_ctx._net_status = ""
+    app_ctx._on_net_status("Waiting for your opponent.")
+    app_ctx._on_net_status("Waiting for your opponent.")
+    app_ctx._on_net_status("")
+
+    assert heard.spoken == ["Waiting for your opponent."]
+
+
+def test_a_step_arriving_after_the_dialog_has_gone_is_harmless(app_ctx):
+    """The session runs on its own thread and does not know the player has
+    already cancelled."""
+    heard = _listen(app_ctx)
+    app_ctx._online_dialog = None
+    app_ctx._net_status = ""
+
+    app_ctx._on_net_status("Connected as the joiner.")
+
+    assert heard.spoken == ["Connected as the joiner."]
+
+
+def test_the_waiting_dialog_rewraps_a_longer_line(app_ctx):
+    """SetLabel throws away the newlines Wrap put in, so a longer step would
+    otherwise run off the side of the dialog."""
+    from fusionfire.ui.online_dialog import WaitingDialog
+
+    dialog = WaitingDialog(app_ctx.frame, "Short.")
+    try:
+        narrow = dialog.GetSize().width
+        dialog.set_text(
+            "Connected as the host. Waiting for your opponent to join, for "
+            "up to 10 minutes."
+        )
+        assert dialog.GetSize().width >= narrow
+        assert dialog.label.GetSize().width <= 430, "the line was never wrapped"
+    finally:
+        dialog.Destroy()
+
+
+def test_the_session_is_given_somewhere_to_report(app_ctx, monkeypatch):
+    """The callback has to actually be wired, not merely available."""
+    from fusionfire.ui import online_dialog
+
+    real_dialog = online_dialog.OnlineDialog
+    made = {}
+
+    class _Session:
+        is_host = True
+
+        def __init__(self, **kwargs):
+            made.update(kwargs)
+
+        def connect_relay(self, *a, **k):
+            pass
+
+        def close(self, reason=""):
+            pass
+
+    def build(frame, settings):
+        dialog = real_dialog(frame, settings)
+        dialog.relay_field.SetValue("relay.example.org")
+        assert dialog._apply() is True
+        monkeypatch.setattr(dialog, "ShowModal", lambda: wx.ID_OK)
+        return dialog
+
+    monkeypatch.setattr(online_dialog, "OnlineDialog", build)
+    monkeypatch.setattr(online_dialog, "WaitingDialog", _DoneWaiting)
+    monkeypatch.setattr("fusionfire.net.session.RelaySession", _Session)
+
+    app_ctx.start_online()
+
+    assert callable(made.get("on_status")), "the session had nowhere to report progress"
+
+
+# ----------------------------------------------------------------------
 # How much the online dialog says
 #
 # A disabled control is still in the reading order, so greying out the half

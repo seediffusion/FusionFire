@@ -91,6 +91,9 @@ class AppContext:
         #: True while a disconnection we caused is still on its way back to
         #: us through the session's callback.
         self._expect_disconnect = False
+        #: The last line the connection reported about itself, so the same
+        #: one is not spoken twice.
+        self._net_status = ""
         #: The bullets and restores this player asked for in the online
         #: dialog. Sent in our hello; used only if the relay makes us host.
         self._online_supplies = (
@@ -529,17 +532,18 @@ class AppContext:
             session_class = HostSession
         else:
             session_class = JoinSession
+        self._net_status = ""
         self.net = session_class(
             on_message=lambda m: wx.CallAfter(self._on_net_message, m),
             on_connected=lambda: wx.CallAfter(self._on_net_connected),
             on_disconnected=lambda r: wx.CallAfter(self._on_net_disconnected, r),
+            on_status=lambda t: self._later(self._on_net_status, t),
         )
 
         if connection == "relay":
-            waiting_text = (
-                f"Connecting to the relay server {host} on port {port}...\n\n"
-                "You will be told which player is the host."
-            )
+            # Deliberately just the first step. The session reports each one
+            # after it, including the long wait this used to hide.
+            waiting_text = f"Connecting to the relay server {host} on port {port}..."
         elif hosting:
             # Name the address rather than telling the player to go and find
             # one. They are waiting on somebody else to type it in, and the
@@ -583,6 +587,23 @@ class AppContext:
             self.net = None
             self.audio.stop_music()
         self._close_waiting()
+
+    def _on_net_status(self, text: str) -> None:
+        """Report what the connection is doing, while it is still doing it.
+
+        Both halves matter. The dialog is what a sighted player is looking
+        at, and speech is the only way a screen reader hears about it at
+        all -- a static text quietly changing is announced by nothing.
+
+        The same line arriving twice is not news, so it is dropped rather
+        than spoken again over whatever the player was listening to.
+        """
+        if not text or text == self._net_status:
+            return
+        self._net_status = text
+        if self._online_dialog is not None:
+            self._online_dialog.set_text(text)
+        self.presenter.report(text)
 
     def _close_waiting(self) -> None:
         dialog, self._online_dialog = self._online_dialog, None
