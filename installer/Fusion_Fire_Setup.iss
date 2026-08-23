@@ -3,7 +3,7 @@
 ; Non-commercial use only
 
 #define MyAppName "Fusion Fire"
-#define MyAppVersion "2520"
+#define MyAppVersion "2520.1"
 #define MyAppPublisher "Seediffusion"
 #define MyAppURL "https://github.com/seediffusion/fusion-fire"
 #define MyAppExeName "FusionFire.exe"
