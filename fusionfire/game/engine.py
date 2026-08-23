@@ -836,7 +836,16 @@ class Engine:
     # Bonus round hand-off
     # ------------------------------------------------------------------
     def should_spawn_bonus(self) -> bool:
-        if self.phase is not Phase.PLAYING or self.online:
+        """Whether a bonus round is due, by this engine's reckoning.
+
+        Online, both engines would answer this independently and disagree,
+        so exactly one of them is asked: the host, which then tells the other
+        end to open one. That is the caller's business, not this method's --
+        the rule about cooldowns and chance is the same either way, and only
+        who gets to roll the dice differs. See
+        :meth:`fusionfire.ui.game_panel.GamePanel._may_offer_bonus`.
+        """
+        if self.phase is not Phase.PLAYING:
             return False
         if self.rounds_since_bonus < K.BONUS_COOLDOWN_ROUNDS:
             return False
@@ -866,9 +875,85 @@ class Engine:
         self.rounds_since_bonus = 0
         for effect in result.effects:
             effect.apply(self.player, self.opponent, self.difficulty)
+        return self._settle_bonus(log, result.summary)
+
+    def apply_peer_bonus(self, message: dict) -> list[Event]:
+        """Fold the other player's bonus round into this end of the match.
+
+        Their notes were their own and this end never saw them, so what
+        arrives is the arithmetic rather than the effects: what their notes
+        did to them, which lands on our ``opponent``, and what their notes
+        did to us, which lands on our ``player``. Everything has already been
+        bounded by the schema, and is clamped again here -- a peer running
+        modified code still cannot heal itself past full or drive us negative
+        by more than the notes could.
+        """
+        log = EventLog()
+        self.rounds_since_bonus = 0
+
+        self.opponent.health += int(message.get("health", 0))
+        self.opponent.points = max(0, self.opponent.points + int(message.get("points", 0)))
+        self.opponent.bullets = max(0, self.opponent.bullets + int(message.get("bullets", 0)))
+        self.opponent.restores = max(0, self.opponent.restores + int(message.get("restores", 0)))
+        self.opponent.bombs = max(0, self.opponent.bombs + int(message.get("bombs", 0)))
+
+        self.player.health += int(message.get("foe_health", 0))
+        self.player.points = max(0, self.player.points + int(message.get("foe_points", 0)))
+        self.player.bombs = max(0, self.player.bombs + int(message.get("foe_bombs", 0)))
+
+        return self._settle_bonus(log, self._describe_peer_bonus(message))
+
+    def _describe_peer_bonus(self, message: dict) -> str:
+        """Say what the other player's notes came to, from this end.
+
+        Composed here rather than sent, because a summary written where the
+        notes were picked is written in the wrong person: their "You gain 12
+        health" arrives at a player who gained nothing. The numbers carry no
+        such confusion, so the words are built from them on the side that has
+        to read them out.
+        """
+        def amount(n: int, singular: str) -> str:
+            # "gains 1 bombs" is the sort of thing a screen reader reads out
+            # in full and a player then has to un-hear.
+            plural = "" if singular == "health" or abs(n) == 1 else "s"
+            return f"{abs(n)} {singular}{plural}"
+
+        name = self.opponent.name
+        theirs = [
+            f"{'gains' if n > 0 else 'loses'} {amount(n, label)}"
+            for label, n in (
+                ("health", int(message.get("health", 0))),
+                ("point", int(message.get("points", 0))),
+                ("bullet", int(message.get("bullets", 0))),
+                ("health restore", int(message.get("restores", 0))),
+                ("bomb", int(message.get("bombs", 0))),
+            )
+            if n
+        ]
+        ours = [
+            f"{'gain' if n > 0 else 'lose'} {amount(n, label)}"
+            for label, n in (
+                ("health", int(message.get("foe_health", 0))),
+                ("point", int(message.get("foe_points", 0))),
+                ("bomb", int(message.get("foe_bombs", 0))),
+            )
+            if n
+        ]
+        if not theirs and not ours:
+            return f"{name} marked nothing."
+
+        parts = []
+        if theirs:
+            parts.append(f"{name} " + ", ".join(theirs))
+        if ours:
+            parts.append("you " + ", ".join(ours))
+        return f"From {name}'s notes: " + "; ".join(parts) + "."
+
+    def _settle_bonus(self, log: EventLog, summary: str) -> list[Event]:
+        """Clamp, announce and check for a death. Shared by both bonus paths."""
         self.player.health = min(K.MAX_HEALTH, self.player.health)
         self.opponent.health = min(K.MAX_HEALTH, self.opponent.health)
-        log.add(BonusFinished(result.summary))
+        log.add(BonusFinished(summary))
         log.add(*self._music_for_health(), StatsChanged())
 
         if not self.player.alive or not self.opponent.alive:

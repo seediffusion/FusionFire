@@ -46,7 +46,15 @@ WARN_AT = (0.30, 0.15)
 
 # --- Bonus round --------------------------------------------------------
 BONUS_NOTE_COUNT = 13
-BONUS_DURATION = 3.0
+#: How long a bonus round lasts, unless the player says otherwise. Three
+#: seconds is the original's, and is deliberately not enough time to think.
+DEFAULT_BONUS_SECONDS = 3
+#: The longest a bonus round may be set to. Long enough to hear all thirteen
+#: notes twice over, which turns the round from a scramble into a choice --
+#: some players want that and some want the scramble, so it is a setting.
+MAX_BONUS_SECONDS = 30
+#: How often the clock is checked. Fine enough that the round ends when it
+#: says it will, coarse enough not to wake the interface sixty times a second.
 BONUS_TICK = 0.5
 #: Chance per completed round that the opponent spawns an item bonus.
 BONUS_SPAWN_CHANCE = 12.0

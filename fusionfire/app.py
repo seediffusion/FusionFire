@@ -664,6 +664,16 @@ class AppContext:
 
             gender = self.engine.opponent.gender if self.engine else "male"
             self.audio.play_one_of(laugh_group(gender), pan=0.25)
+        elif kind == "bonus_start":
+            panel = self._match_panel()
+            if panel is not None:
+                panel.begin_peer_bonus(message["seconds"])
+        elif kind == "bonus":
+            panel = self._match_panel()
+            if panel is not None:
+                panel.receive_peer_bonus(message)
+            elif self.engine is not None:
+                self.presenter.render(self.engine.apply_peer_bonus(message))
         elif kind == "resign":
             if self._match_finished():
                 # Not a resignation: the peer announcing the ending we have
@@ -682,6 +692,18 @@ class AppContext:
             self.leave_match()
         elif self.engine is not None:
             self._apply_remote_move(message)
+
+    def _match_panel(self):
+        """The match screen, if that is what is on the frame right now.
+
+        The bonus round belongs to the panel -- it owns the dialog, the
+        timers and the modal input target -- so the two bonus messages are
+        the only ones that have to be handed somewhere other than the engine.
+        """
+        from .ui.game_panel import GamePanel
+
+        panel = getattr(self.frame, "content", None)
+        return panel if isinstance(panel, GamePanel) else None
 
     def _begin_online_match(self, hello: dict) -> None:
         if self.engine is not None:

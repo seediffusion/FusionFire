@@ -101,6 +101,10 @@ class Settings:
     difficulty: str = "intermediate"
     stats_enabled: bool = True
     use_power_weapon: bool = True
+    #: How long a bonus round lasts, in seconds. Offline this is simply your
+    #: setting; online the host's is used for both players, because a round
+    #: the two of them played for different lengths is two different rounds.
+    bonus_seconds: int = 3
     confirm_exit: bool = True
     #: Play the launch jingle instead of the spoken ready message. The first
     #: Enter on the front menu skips it.
@@ -219,6 +223,14 @@ class Settings:
         self.relay_spy_url = _as_url(self.relay_spy_url)
 
         from .game.constants import MAX_ONLINE_SUPPLY
+
+        from .game.constants import DEFAULT_BONUS_SECONDS, MAX_BONUS_SECONDS
+
+        self.bonus_seconds = int(
+            _clamp(
+                _as_int(self.bonus_seconds, DEFAULT_BONUS_SECONDS), 1, MAX_BONUS_SECONDS
+            )
+        )
 
         self.online_bullets = int(
             _clamp(_as_int(self.online_bullets, 10), 0, MAX_ONLINE_SUPPLY)

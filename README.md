@@ -8,7 +8,7 @@ Fusion Fire is a modernised port of Acefire, written by Day Garwood of X-sight I
 
 ## Fusion Fire features
 
-Fusion Fire is a turn-based fight against a computer that genuinely does not want to be there. You shoot, lash, bomb and heal; it shoots, lashes, bombs and heals back, and gets better at it as you raise the difficulty. Six opponents run from Coward, who hands you unlimited ammunition and never heals itself, up to Impossible, which denies you bombs, disables every cheat and heals the moment it drops below three quarters health. Between rounds it hides items in an octave of thirteen notes and gives you three seconds to grab them by ear. It can also simply refuse to play, and is measurably grumpier at mealtimes and after midnight, because the original was written that way and it is funnier than a menu.
+Fusion Fire is a turn-based fight against a computer that genuinely does not want to be there. You shoot, lash, bomb and heal; it shoots, lashes, bombs and heals back, and gets better at it as you raise the difficulty. Six opponents run from Coward, who hands you unlimited ammunition and never heals itself, up to Impossible, which denies you bombs, disables every cheat and heals the moment it drops below three quarters health. Between rounds it hides items in an octave of thirteen notes and gives you three seconds to grab them by ear, or as long as thirty if three is not your idea of fair. It can also simply refuse to play, and is measurably grumpier at mealtimes and after midnight, because the original was written that way and it is funnier than a menu.
 
 An action you cannot take says so and leaves it at that. Loading a gun that is already loaded, firing on an empty chamber, healing at full health: each answers with a sentence saying what is wrong, and no buzzer in front of it. The refusal was always the sentence.
 
@@ -175,6 +175,8 @@ Encrypted mode adds a passphrase of twelve characters or more, and the passphras
 
 The relay does not weaken that: the TLS handshake runs between the two players, through the relay, so the relay only ever sees ciphertext. It is trusted for availability, never for privacy. It can drop a match, but it cannot read one and cannot join one without the passphrase. In quick play the room code fills the same slot as the passphrase. It is hashed into the same 16-byte room token the relay pairs by, so the relay does not even know which mode a room is in. Relay spy lists are validated before they are shown, and nothing a spy reports is trusted: a hostile spy can only waste your time, not read your match.
 
+The bonus round happens online too. Both players get one at the same moment and each picks from their own thirteen notes; the host rolls for it and sets the length, because two engines asked independently would disagree and a round only one player is in is worse than none. Neither side ever sees the other's notes, only what they came to.
+
 Both players start an online match with the same finite supplies, and the host decides how many. Bullets each and restores each are set at the bottom of the Play online dialog. The relay only decides who hosts once both players have dialled in, so both of you fill the numbers in and the host's are the ones used. Nobody has an endless magazine online: an opponent who can never run out can never be worn down.
 
 Messages are length-prefixed JSON checked against a strict schema. Unknown message types, unknown fields, missing fields and out-of-range values are all rejected, frame sizes are capped before anything is allocated, the listener accepts exactly one opponent and then closes, and a peer that floods the connection is disconnected.
@@ -199,7 +201,7 @@ Speech and braille go through Prism, which talks to whichever screen reader is a
 uv run pytest
 ```
 
-637 tests. The rules, the bonus round, the cheat parser, the name generator and the calendar are pure Python and run in a fraction of a second. On top of those, the suite opens real sockets and completes real TLS handshakes to prove a wrong passphrase cannot connect, boots the actual application and plays a match through the same calls the keyboard and gamepad use, drives a stand-in controller to check that the button under your thumb is the one the game thinks it is, builds every dialog to check its labels line up, and asserts that no user-facing text contains a character the speech backend would refuse.
+656 tests. The rules, the bonus round, the cheat parser, the name generator and the calendar are pure Python and run in a fraction of a second. On top of those, the suite opens real sockets and completes real TLS handshakes to prove a wrong passphrase cannot connect, boots the actual application and plays a match through the same calls the keyboard and gamepad use, drives a stand-in controller to check that the button under your thumb is the one the game thinks it is, builds every dialog to check its labels line up, and asserts that no user-facing text contains a character the speech backend would refuse.
 
 ## Credits
 

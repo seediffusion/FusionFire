@@ -112,6 +112,11 @@ def _name(value: Any) -> str:
     return cleaned
 
 
+#: What one bonus round can be worth, taken from the local rules: thirteen
+#: notes, and the largest swing any single note carries. A peer running
+#: modified code cannot report a bonus worth more than the game can produce.
+_MAX_BONUS_SWING = K.BONUS_NOTE_COUNT * 25
+_MAX_BONUS_COUNT = K.BONUS_NOTE_COUNT * 10
 #: The widest damage any single message may claim, taken from the local rules.
 _MAX_DAMAGE = max(
     K.GUN_DAMAGE[1], K.LASH_DAMAGE[1], K.BOMB_DAMAGE[1], K.POWER_WEAPON_DAMAGE[1]
@@ -135,6 +140,24 @@ SCHEMA: dict[str, dict[str, Callable[[Any], Any] | _Optional]] = {
         "restores": _optional(_bounded_int(0, K.MAX_ONLINE_SUPPLY)),
     },
     "ready": {},
+    # The host opens a bonus round on both ends at once and says how long it
+    # runs, so the two players are answering the same question for the same
+    # length of time.
+    "bonus_start": {"seconds": _bounded_int(1, K.MAX_BONUS_SECONDS)},
+    # And what one player's notes turned out to be worth. Deltas rather than
+    # effects, because the effects are functions and the wire carries
+    # numbers -- numbers that can be bounded before anything is applied.
+    # ``foe_`` is what the sender's notes did to the receiver.
+    "bonus": {
+        "health": _bounded_int(-_MAX_BONUS_SWING, _MAX_BONUS_SWING),
+        "points": _bounded_int(-_MAX_BONUS_COUNT, _MAX_BONUS_COUNT),
+        "bullets": _bounded_int(-_MAX_BONUS_COUNT, _MAX_BONUS_COUNT),
+        "restores": _bounded_int(-_MAX_BONUS_COUNT, _MAX_BONUS_COUNT),
+        "bombs": _bounded_int(-_MAX_BONUS_COUNT, _MAX_BONUS_COUNT),
+        "foe_health": _bounded_int(-_MAX_BONUS_SWING, _MAX_BONUS_SWING),
+        "foe_points": _bounded_int(-_MAX_BONUS_COUNT, _MAX_BONUS_COUNT),
+        "foe_bombs": _bounded_int(-_MAX_BONUS_COUNT, _MAX_BONUS_COUNT),
+    },
     "strike": {
         "weapon": _enum("gun", "whip", "bomb"),
         "outcome": _enum("hit", "miss"),

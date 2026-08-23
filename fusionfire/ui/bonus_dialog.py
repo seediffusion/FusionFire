@@ -1,14 +1,17 @@
 """The item bonus round.
 
-Thirteen notes, three seconds, arrow keys to move and space to mark. The
-clock ticks audibly the whole time and a horn ends it, which is the entire
-interface — the window exists to own the keyboard focus, not to be looked
-at.
+Thirteen notes, arrow keys to move and space to mark. The clock ticks
+audibly the whole time and a horn ends it, which is the entire interface —
+the window exists to own the keyboard focus, not to be looked at.
 
-The timer is deliberately generous about what counts as an input: the arrow
+How long it runs is passed in: the player's own setting offline, the host's
+online. The default is the original's three seconds, which is not long
+enough to think and is not meant to be.
+
+The round is deliberately generous about what counts as an input: the arrow
 keys, the gamepad D-pad and the left stick all move; space and the pad's A
-button both mark. Three seconds is not long enough to go hunting for the
-right control.
+button both mark. At three seconds there is no time to go hunting for the
+right control, and at thirty there is no reason to make anyone.
 """
 
 from __future__ import annotations
@@ -16,7 +19,7 @@ from __future__ import annotations
 import wx
 
 from ..game import constants as K
-from ..game.bonus import BonusResult, BonusRound
+from ..game.bonus import DEFAULT_FOE, BonusResult, BonusRound
 from ..input.actions import Action
 
 
@@ -28,17 +31,27 @@ class BonusDialog(wx.Dialog):
     #: focus ring around a window with one control on it.
     gamepad_navigation = False
 
-    def __init__(self, parent: wx.Window, difficulty, audio, speech) -> None:
+    def __init__(
+        self,
+        parent: wx.Window,
+        difficulty,
+        audio,
+        speech,
+        *,
+        seconds: int = K.DEFAULT_BONUS_SECONDS,
+        foe: str = DEFAULT_FOE,
+    ) -> None:
         super().__init__(
             parent,
             title="Pick a note",
             style=wx.DEFAULT_DIALOG_STYLE & ~(wx.CLOSE_BOX | wx.SYSTEM_MENU),
         )
-        self.round = BonusRound(difficulty)
+        self.round = BonusRound(difficulty, foe)
         self.audio = audio
         self.speech = speech
         self.result: BonusResult | None = None
-        self._remaining = K.BONUS_DURATION
+        self.seconds = max(1, min(K.MAX_BONUS_SECONDS, int(seconds)))
+        self._remaining = float(self.seconds)
         self._clock_handle = None
 
         panel = wx.Panel(self)
@@ -47,7 +60,7 @@ class BonusDialog(wx.Dialog):
         heading = wx.StaticText(
             panel,
             label=(
-                f"The machine has hidden items in {K.BONUS_NOTE_COUNT} notes.\n"
+                f"{self.round.foe} has hidden items in {K.BONUS_NOTE_COUNT} notes.\n"
                 "Left and right to move, space to mark. Mark as many as you dare."
             ),
         )
@@ -72,8 +85,10 @@ class BonusDialog(wx.Dialog):
 
     # ------------------------------------------------------------------
     def _start(self) -> None:
+        plural = "" if self.seconds == 1 else "s"
         self.speech.report(
-            "Pick a note. Three seconds. Left and right to move, space to mark."
+            f"Pick a note. {self.seconds} second{plural}. "
+            "Left and right to move, space to mark."
         )
         self.audio.play(self.round.note_sound)
         self._clock_handle = self.audio.play("itemclock", looping=True, volume=0.7)
@@ -91,9 +106,10 @@ class BonusDialog(wx.Dialog):
     def _on_key(self, event: wx.KeyEvent) -> None:
         """Claim the three keys the round uses; skip everything else.
 
-        Escape is deliberately not handled: three seconds is short enough
-        that there is nothing to escape from, and swallowing it would trap
-        focus if the round ever failed to close itself.
+        Escape is deliberately not handled. The round ends on its own, so
+        there is nothing to escape from however long it is set to, and
+        swallowing the key would trap focus if it ever failed to close
+        itself.
         """
         code = event.GetKeyCode()
         if code == wx.WXK_LEFT:
@@ -115,8 +131,8 @@ class BonusDialog(wx.Dialog):
             self._move(1)
         elif action in (Action.MARK_NOTE, Action.TAUNT, Action.FIRE_GUN):
             # Space, the pad's A button and the trigger that fires the gun.
-            # A is the taunt during a match and marks a note here; three
-            # seconds is not long enough to go looking for one right button.
+            # A is the taunt during a match and marks a note here; at three
+            # seconds there is no time to go looking for one right button.
             self._toggle()
 
     def _move(self, delta: int) -> None:

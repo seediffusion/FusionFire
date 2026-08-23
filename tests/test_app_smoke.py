@@ -253,6 +253,7 @@ SETTINGS_FIELDS = [
     ("sound_slider", "Sound volume (Home and End in game):"),
     ("music_slider", "Music volume (Page Up and Page Down in game):"),
     ("backend", "Speech output:"),    ("difficulty", "Default difficulty:"),
+    ("bonus_seconds", "Bonus round length in seconds:"),
     ("name_field", "Your name:"),
     ("gender", "Your character's voice:"),
     ("birthday", "Birthday as month and day, for example 03-14 (optional):"),
@@ -1605,7 +1606,7 @@ def test_opening_the_bonus_defers_the_machine_turn(match, monkeypatch):
     assert panel._ai_timer is not None
 
     class FakeBonus:
-        def __init__(self, parent, difficulty, audio, speech):
+        def __init__(self, parent, difficulty, audio, speech, *, seconds=3, foe="The machine"):
             self.result = None
 
         def ShowModal(self):
@@ -1635,8 +1636,8 @@ def test_the_results_dialog_blocks_the_next_turn(match, monkeypatch):
     ctx.engine.turn = Side.OPPONENT
 
     class FakeBonus:
-        def __init__(self, parent, difficulty, audio, speech):
-            self.round = BonusRound(difficulty)
+        def __init__(self, parent, difficulty, audio, speech, *, seconds=3, foe="The machine"):
+            self.round = BonusRound(difficulty, foe)
 
         def ShowModal(self):
             self.result = self.round.finish()
@@ -1662,7 +1663,233 @@ def test_the_results_dialog_blocks_the_next_turn(match, monkeypatch):
     assert [kind for kind, _ in calls] == ["message", "schedule"], (
         "the machine's turn started before the results dialog was dismissed"
     )
-    assert calls[0][1] == "You marked nothing. The machine keeps its items."
+    assert calls[0][1] == "You marked nothing. The machine keeps the lot."
+
+
+# ----------------------------------------------------------------------
+# How long the bonus round runs
+# ----------------------------------------------------------------------
+def test_the_bonus_round_takes_its_length_from_the_setting(app_ctx, match):
+    from fusionfire.ui.bonus_dialog import BonusDialog
+
+    ctx, panel = match
+    dialog = BonusDialog(panel, ctx.engine.difficulty, ctx.audio, ctx.speech, seconds=30)
+    try:
+        assert dialog.seconds == 30
+        assert dialog._remaining == 30.0
+    finally:
+        dialog.Destroy()
+
+
+def test_the_bonus_length_is_held_inside_its_limits(app_ctx, match):
+    """The dialog is handed a number that has been over a wire, so it does
+    not take it on trust."""
+    from fusionfire.game.constants import MAX_BONUS_SECONDS
+    from fusionfire.ui.bonus_dialog import BonusDialog
+
+    ctx, panel = match
+    for asked, expected in ((0, 1), (-5, 1), (9999, MAX_BONUS_SECONDS)):
+        dialog = BonusDialog(
+            panel, ctx.engine.difficulty, ctx.audio, ctx.speech, seconds=asked
+        )
+        try:
+            assert dialog.seconds == expected
+        finally:
+            dialog.Destroy()
+
+
+def test_the_bonus_round_says_how_long_it_is(app_ctx, match):
+    from fusionfire.ui.bonus_dialog import BonusDialog
+
+    ctx, panel = match
+    heard = _SpeechLog()
+    dialog = BonusDialog(panel, ctx.engine.difficulty, ctx.audio, heard, seconds=1)
+    try:
+        assert any("1 second." in line for line in heard.spoken), heard.spoken
+        assert not any("1 seconds" in line for line in heard.spoken), heard.spoken
+    finally:
+        dialog.Destroy()
+
+    heard = _SpeechLog()
+    dialog = BonusDialog(panel, ctx.engine.difficulty, ctx.audio, heard, seconds=30)
+    try:
+        assert any("30 seconds." in line for line in heard.spoken), heard.spoken
+    finally:
+        dialog.Destroy()
+
+
+def test_the_settings_dialog_carries_the_bonus_length(app_ctx):
+    from fusionfire.ui.settings_dialog import SettingsDialog
+
+    app_ctx.settings.bonus_seconds = 3
+    dialog = SettingsDialog(app_ctx.frame, app_ctx)
+    try:
+        dialog.bonus_seconds.SetValue(20)
+        dialog._on_ok(wx.CommandEvent(wx.wxEVT_BUTTON, wx.ID_OK))
+        assert app_ctx.settings.bonus_seconds == 20
+    finally:
+        dialog.Destroy()
+
+
+# ----------------------------------------------------------------------
+# The bonus round online
+#
+# Both players get one at the same moment and each picks from their own
+# thirteen notes. The host rolls for it and says how long it runs, because
+# two engines asked independently would disagree -- and a round only one
+# player is in is worse than no round at all.
+# ----------------------------------------------------------------------
+def test_only_the_host_rolls_for_a_bonus(online_match):
+    ctx, panel, net = online_match
+
+    net.is_host = True
+    assert panel._may_offer_bonus() is True
+    net.is_host = False
+    assert panel._may_offer_bonus() is False
+
+
+def test_offline_the_one_engine_decides(match):
+    _ctx, panel = match
+    assert panel._may_offer_bonus() is True
+
+
+def test_the_top_of_a_round_is_where_the_host_rolls(online_match, monkeypatch):
+    """Offline the roll happens just after the machine's move, which is the
+    same moment: the turn coming back to the player."""
+    from fusionfire.game.events import TurnChanged
+
+    ctx, panel, net = online_match
+    net.is_host = True
+    rolled = []
+    monkeypatch.setattr(panel, "_consider_bonus", lambda: rolled.append(True))
+
+    panel._on_event(TurnChanged(Side.OPPONENT))
+    assert rolled == [], "rolled when the turn passed to the opponent"
+
+    panel._on_event(TurnChanged(Side.PLAYER))
+    assert rolled == [True], "the host never rolled at the top of the round"
+
+
+def test_a_bonus_is_not_rolled_twice_over_offline(match, monkeypatch):
+    """Offline the roll belongs to the machine's move, and the turn event
+    must not add a second one."""
+    from fusionfire.game.events import TurnChanged
+
+    _ctx, panel = match
+    rolled = []
+    monkeypatch.setattr(panel, "_consider_bonus", lambda: rolled.append(True))
+    monkeypatch.setattr(panel, "_schedule_opponent", lambda: None)
+
+    panel._on_event(TurnChanged(Side.PLAYER))
+    assert rolled == [], "offline, the turn event rolled for a bonus as well"
+
+
+def test_the_host_tells_the_other_player_the_round_has_started(online_match, monkeypatch):
+    ctx, panel, net = online_match
+    net.is_host = True
+    ctx.settings.bonus_seconds = 12
+    opened = []
+    monkeypatch.setattr(panel, "_open_bonus", lambda seconds=None: opened.append(seconds))
+
+    panel._offer_bonus()
+
+    assert net.sent == [("bonus_start", {"seconds": 12})], net.sent
+    assert opened == [12], "the host did not open its own round"
+
+
+def test_a_joiner_opens_the_round_the_host_asked_for(online_match, monkeypatch):
+    """And for the host's length, not its own -- that is what "the host
+    decides" means."""
+    ctx, panel, net = online_match
+    net.is_host = False
+    ctx.settings.bonus_seconds = 3  # ours, and not the one that counts
+    opened = []
+    monkeypatch.setattr(panel, "_open_bonus", lambda seconds=None: opened.append(seconds))
+
+    ctx._on_net_message({"type": "bonus_start", "seconds": 25})
+
+    assert opened == [25], opened
+
+
+def test_finishing_a_bonus_reports_what_it_was_worth(online_match, monkeypatch):
+    """The other end never saw our notes, so the numbers are all it gets."""
+    from fusionfire.game.bonus import BonusResult, Effect
+
+    ctx, panel, net = online_match
+    gain = Effect("You gain 10 health", lambda p, o, d: setattr(p, "health", p.health + 10))
+    drain = Effect("They lose 6 health", lambda p, o, d: setattr(o, "health", o.health - 6))
+
+    class FakeBonus:
+        def __init__(self, *a, **k):
+            self.result = BonusResult(marked=[0, 1], effects=[gain, drain], summary="ok")
+
+        def ShowModal(self):
+            return wx.ID_OK
+
+        def Destroy(self):
+            pass
+
+    ctx.engine.player.health = 50
+    ctx.engine.opponent.health = 80
+    monkeypatch.setattr("fusionfire.ui.game_panel.BonusDialog", FakeBonus)
+    monkeypatch.setattr("fusionfire.ui.game_panel.message", lambda *a, **k: None)
+
+    panel._open_bonus(5)
+
+    sent = [fields for kind, fields in net.sent if kind == "bonus"]
+    assert sent, f"nothing was reported to the other player: {net.sent}"
+    assert sent[0]["health"] == 10, sent[0]
+    assert sent[0]["foe_health"] == -6, sent[0]
+
+
+def test_a_peer_bonus_waits_for_our_own_notes_to_be_done(online_match):
+    """Both rounds run at once, so theirs can land while ours is still on
+    screen. Folding it in there would put a result -- possibly the end of the
+    match -- behind a modal dialog."""
+    ctx, panel, _net = online_match
+    ctx.engine.player.health = 90
+    panel._bonus_open = True
+
+    panel.receive_peer_bonus(
+        {"health": 0, "points": 0, "bullets": 0, "restores": 0, "bombs": 0,
+         "foe_health": -20, "foe_points": 0, "foe_bombs": 0}
+    )
+    assert ctx.engine.player.health == 90, "it was applied under the dialog"
+    assert panel._pending_peer_bonus is not None
+
+    panel._bonus_open = False
+    panel._drain_peer_bonus()
+    assert ctx.engine.player.health == 70
+    assert panel._pending_peer_bonus is None
+
+
+def test_a_peer_bonus_lands_at_once_when_ours_is_not_open(online_match):
+    ctx, panel, _net = online_match
+    ctx.engine.player.health = 90
+
+    panel.receive_peer_bonus(
+        {"health": 0, "points": 0, "bullets": 0, "restores": 0, "bombs": 0,
+         "foe_health": -20, "foe_points": 0, "foe_bombs": 0}
+    )
+    assert ctx.engine.player.health == 70
+
+
+def test_the_notes_name_the_player_rather_than_the_machine(online_match):
+    """"The machine gains 7 health" reads as a different game entirely when
+    the other side is a person you can hear."""
+    from fusionfire.ui.bonus_dialog import BonusDialog
+
+    ctx, panel, _net = online_match
+    dialog = BonusDialog(
+        panel, ctx.engine.difficulty, ctx.audio, ctx.speech,
+        seconds=3, foe=ctx.engine.opponent.name,
+    )
+    try:
+        descriptions = " ".join(note.description for note in dialog.round.notes)
+        assert "machine" not in descriptions.lower(), descriptions
+        assert "You marked nothing" in dialog.round.finish().summary
+    finally:
+        dialog.Destroy()
 
 
 # ----------------------------------------------------------------------

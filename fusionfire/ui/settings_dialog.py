@@ -10,6 +10,7 @@ from __future__ import annotations
 import wx
 
 from ..audio import NULL_HANDLE
+from ..game.constants import MAX_BONUS_SECONDS
 from ..game.difficulty import ordered
 from ..input.actions import ACTION_LABELS, BINDABLE, Action
 from .dialog_base import finish_dialog
@@ -343,6 +344,22 @@ class SettingsDialog(wx.Dialog):
         self.stats_on.SetValue(self.settings.stats_enabled)
         sizer.Add(self.stats_on, 0, wx.ALL, 8)
 
+        bonus_label = field_label(page, "Bonus round length in seconds:")
+        self.bonus_seconds = wx.SpinCtrl(
+            page, min=1, max=MAX_BONUS_SECONDS, initial=self.settings.bonus_seconds
+        )
+        sizer.Add(stack(bonus_label, self.bonus_seconds), 0, wx.ALL | wx.EXPAND, 8)
+
+        bonus_hint = wx.StaticText(
+            page,
+            label=(
+                "Three seconds is the original's. Online the host's setting "
+                "is used for both players."
+            ),
+        )
+        bonus_hint.Wrap(440)
+        sizer.Add(bonus_hint, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
+
         self.power_weapon_on = wx.CheckBox(page, label="Bring the po&wer weapon by default")
         self.power_weapon_on.SetValue(self.settings.use_power_weapon)
         sizer.Add(self.power_weapon_on, 0, wx.ALL, 8)
@@ -543,6 +560,7 @@ class SettingsDialog(wx.Dialog):
             s.theme = chosen_theme
         s.stats_enabled = self.stats_on.GetValue()
         s.use_power_weapon = self.power_weapon_on.GetValue()
+        s.bonus_seconds = int(self.bonus_seconds.GetValue())
         s.check_for_updates = self.updates_on.GetValue()
 
         s.gamepad_enabled = self.pad_on.GetValue()

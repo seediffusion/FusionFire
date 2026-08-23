@@ -25,6 +25,9 @@ from ..game.engine import Engine
 from ..game.events import GameOver, StatsChanged, StrikeResolved, TurnChanged
 from ..input.actions import Action
 from ..input.keymap import action_for, help_text
+from ..game.bonus import DEFAULT_FOE
+from ..game.bonus import deltas as bonus_deltas
+from ..game.bonus import snapshot as bonus_snapshot
 from .bonus_dialog import BonusDialog
 from .cheat_prompt import CheatPrompt
 from .comment_dialog import CommentDialog
@@ -52,6 +55,10 @@ class GamePanel(wx.Panel):
         self.settings = app_ctx.settings
         self.cheat = CheatPrompt(self.audio, self.speech)
         self._bonus_open = False
+        #: The other player's bonus result, held until ours is out of the
+        #: way. Both rounds run at once, so theirs can land while our own
+        #: notes are still on screen.
+        self._pending_peer_bonus: dict | None = None
         self._ai_timer: wx.CallLater | None = None
         self._power_weapon_timer: wx.CallLater | None = None
         self._intro_timer: wx.CallLater | None = None
@@ -462,6 +469,11 @@ class GamePanel(wx.Panel):
             self._refresh_status()
             if event.side is Side.OPPONENT and self.net is None:
                 self._schedule_opponent()
+            elif event.side is Side.PLAYER and self.net is not None:
+                # The top of a round, which is where the offline game rolls
+                # for a bonus too -- offline it does so just after the
+                # machine's move, which is the same moment.
+                self._consider_bonus()
             if self.net is not None:
                 self._waiting_since = (
                     time.monotonic() if event.side is Side.OPPONENT else None
@@ -539,8 +551,7 @@ class GamePanel(wx.Panel):
         if self.engine.phase is not Phase.PLAYING:
             return
         self._render(self.engine.opponent_move())
-        if self.engine.phase is Phase.PLAYING and self.engine.should_spawn_bonus():
-            wx.CallLater(600, self._open_bonus)
+        self._consider_bonus()
 
     def _on_tick(self, event: wx.TimerEvent) -> None:
         if self.engine.phase is Phase.PLAYING:
@@ -579,9 +590,81 @@ class GamePanel(wx.Panel):
     # ------------------------------------------------------------------
     # Bonus round
     # ------------------------------------------------------------------
-    def _open_bonus(self) -> None:
+    def _may_offer_bonus(self) -> bool:
+        """Whether this end is the one that decides a bonus round happens.
+
+        Offline there is only one engine, so it decides. Online there are
+        two, and they roll their own dice: asked independently they would
+        disagree, and a round only one player is in is worse than no round
+        at all. So the host rolls and tells the other end, exactly as it
+        already decides who moves first.
+        """
+        return self.net is None or self.net.is_host
+
+    def _consider_bonus(self) -> None:
+        """Roll for a bonus round at the top of a round, if it is ours to roll."""
+        if self._bonus_open or not self._may_offer_bonus():
+            return
+        if self.engine.phase is not Phase.PLAYING:
+            return
+        if not self.engine.should_spawn_bonus():
+            return
+        wx.CallLater(600, self._offer_bonus)
+
+    def _offer_bonus(self) -> None:
+        """Start a bonus round here, and on the other end if there is one."""
+        seconds = self.settings.bonus_seconds
+        if self.net is not None:
+            # Sent first. The two rounds should start together, and ours is
+            # about to take the modal dialog and stop pumping anything else.
+            self.net.send("bonus_start", seconds=seconds)
+        self._open_bonus(seconds)
+
+    def begin_peer_bonus(self, seconds: int) -> None:
+        """The host has started a bonus round; join it."""
+        self._open_bonus(seconds)
+
+    def receive_peer_bonus(self, message: dict) -> None:
+        """Apply what the other player's notes were worth.
+
+        Held back while our own round is still up. Their result can carry a
+        death, and folding one in underneath a modal dialog would put the
+        result of the match on screen behind the notes.
+        """
+        if self._bonus_open:
+            self._pending_peer_bonus = message
+            return
+        self._render(self.engine.apply_peer_bonus(message))
+
+    def _drain_peer_bonus(self) -> None:
+        message, self._pending_peer_bonus = self._pending_peer_bonus, None
+        if message is not None and self.engine.phase is not Phase.FINISHED:
+            self._render(self.engine.apply_peer_bonus(message))
+
+    def _send_bonus(self, before_player, before_opponent) -> None:
+        """Tell the other player what our notes turned out to be worth."""
+        if self.net is None:
+            return
+        mine = bonus_deltas(before_player, bonus_snapshot(self.engine.player))
+        theirs = bonus_deltas(before_opponent, bonus_snapshot(self.engine.opponent))
+        self.net.send(
+            "bonus",
+            health=mine["health"],
+            points=mine["points"],
+            bullets=mine["bullets"],
+            restores=mine["restores"],
+            bombs=mine["bombs"],
+            # What our notes did to them. Only the three a note can reach.
+            foe_health=theirs["health"],
+            foe_points=theirs["points"],
+            foe_bombs=theirs["bombs"],
+        )
+
+    def _open_bonus(self, seconds: int | None = None) -> None:
         if self._bonus_open or not self.engine.enter_bonus():
             return
+        if seconds is None:
+            seconds = self.settings.bonus_seconds
         # Two locks, because the window being modal is not one. wx keeps
         # pumping timers behind a modal dialog, so anything already scheduled
         # still fires: a machine turn that fell due in the beat before the
@@ -592,7 +675,14 @@ class GamePanel(wx.Panel):
         self._cancel_ai_timer()
         self._cancel_power_weapon_timer()
         self._bonus_open = True
-        dialog = BonusDialog(self, self.engine.difficulty, self.audio, self.speech)
+        dialog = BonusDialog(
+            self,
+            self.engine.difficulty,
+            self.audio,
+            self.speech,
+            seconds=seconds,
+            foe=self.engine.opponent.name if self.engine.online else DEFAULT_FOE,
+        )
         self.ctx.set_modal_input_target(dialog)
         try:
             dialog.ShowModal()
@@ -609,12 +699,22 @@ class GamePanel(wx.Panel):
             # dismissed before the next turn can start.
             with self.ctx.modal_input():
                 message(self, result.summary, "Bonus results")
+            before_player = bonus_snapshot(self.engine.player)
+            before_opponent = bonus_snapshot(self.engine.opponent)
             self._render(self.engine.apply_bonus(result))
+            self._send_bonus(before_player, before_opponent)
+
+        # Theirs was held back while ours was on screen.
+        self._drain_peer_bonus()
 
         # The machine's turn was deferred, so it still gets to move once the
         # notes are done. Normally the turn is the player's after a bonus and
         # nothing is scheduled.
-        if self.engine.phase is Phase.PLAYING and self.engine.turn is Side.OPPONENT:
+        if (
+            self.net is None
+            and self.engine.phase is Phase.PLAYING
+            and self.engine.turn is Side.OPPONENT
+        ):
             self._schedule_opponent()
 
     # ------------------------------------------------------------------

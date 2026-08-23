@@ -471,11 +471,151 @@ def test_bonus_cannot_spawn_during_its_cooldown(engine):
     assert not engine.should_spawn_bonus()
 
 
-def test_online_matches_never_spawn_a_bonus():
+def test_an_online_match_can_spawn_a_bonus(monkeypatch):
+    """It used to refuse outright. Both players get one now, so the rule the
+    engine holds is the same as offline -- who is allowed to roll is the
+    panel's business, because only it knows which end is the host."""
+    monkeypatch.setattr("fusionfire.game.engine.rng.chance", lambda pct: True)
     eng = Engine(Combatant(name="P"), Combatant(name="C"), INTERMEDIATE, online=True)
     eng.start()
+    eng.begin_play()
     eng.rounds_since_bonus = 99
-    assert not eng.should_spawn_bonus()
+    assert eng.should_spawn_bonus()
+
+
+def _online_pair():
+    """Two engines of the same match, each seeing it from its own end."""
+    host = Engine(
+        Combatant(name="Host", bullets=10, restores=10),
+        Combatant(name="Joiner", bullets=10, restores=10),
+        INTERMEDIATE,
+        online=True,
+    )
+    joiner = Engine(
+        Combatant(name="Joiner", bullets=10, restores=10),
+        Combatant(name="Host", bullets=10, restores=10),
+        INTERMEDIATE,
+        online=True,
+    )
+    for eng, first in ((host, Side.PLAYER), (joiner, Side.OPPONENT)):
+        eng.start(first=first)
+        eng.begin_play()
+    return host, joiner
+
+
+def _state(engine):
+    p, o = engine.player, engine.opponent
+    return (
+        p.health, p.points, p.bullets, p.restores, p.bombs,
+        o.health, o.points, o.bullets, o.restores, o.bombs,
+    )
+
+
+def test_a_peer_bonus_lands_on_the_right_side_of_the_match():
+    """Their notes moved them; their notes also moved us. Getting the two
+    the wrong way round would heal whoever was supposed to be hurt."""
+    host, joiner = _online_pair()
+    joiner.player.health = 60
+    joiner.opponent.health = 80
+
+    joiner.apply_peer_bonus(
+        {"health": 15, "points": 2, "bullets": -1, "restores": 0, "bombs": 1,
+         "foe_health": -10, "foe_points": 0, "foe_bombs": 0}
+    )
+
+    # "health" is what the sender gained, and the sender is our opponent.
+    assert joiner.opponent.health == 95
+    assert joiner.opponent.points == 2
+    assert joiner.opponent.bullets == 9
+    assert joiner.opponent.bombs == 1
+    # "foe_" is what the sender's notes did to us.
+    assert joiner.player.health == 50
+
+
+def test_two_engines_still_agree_after_a_bonus_each():
+    """The whole point of exchanging the numbers. Each side plays its own
+    thirteen notes; afterwards each side's view has to be the other's,
+    mirrored."""
+    from fusionfire.game.bonus import BonusRound, deltas, snapshot
+
+    host, joiner = _online_pair()
+
+    def play(engine, marks):
+        round_ = BonusRound(engine.difficulty, engine.opponent.name)
+        for index in marks:
+            round_.cursor = index
+            round_.toggle()
+        before_me = snapshot(engine.player)
+        before_them = snapshot(engine.opponent)
+        engine.apply_bonus(round_.finish())
+        mine = deltas(before_me, snapshot(engine.player))
+        theirs = deltas(before_them, snapshot(engine.opponent))
+        return {
+            "health": mine["health"], "points": mine["points"],
+            "bullets": mine["bullets"], "restores": mine["restores"],
+            "bombs": mine["bombs"], "foe_health": theirs["health"],
+            "foe_points": theirs["points"], "foe_bombs": theirs["bombs"],
+        }
+
+    from_host = play(host, [0, 3, 7])
+    from_joiner = play(joiner, [1, 5])
+    joiner.apply_peer_bonus(from_host)
+    host.apply_peer_bonus(from_joiner)
+
+    mine = _state(host)
+    theirs = _state(joiner)
+    assert mine == theirs[5:] + theirs[:5], (
+        f"the two ends disagree after a bonus round: {mine} against {theirs}"
+    )
+
+
+def test_a_bonus_does_not_move_the_turn():
+    """Which is what makes it safe online: it is a parenthesis in the match,
+    not a move, so neither end can come out of it thinking it is their go."""
+    from fusionfire.game.bonus import BonusRound
+
+    host, _joiner = _online_pair()
+    host.turn = Side.OPPONENT
+    host.apply_bonus(BonusRound(host.difficulty).finish())
+    assert host.turn is Side.OPPONENT
+
+    host.apply_peer_bonus(
+        {"health": 5, "points": 0, "bullets": 0, "restores": 0, "bombs": 0,
+         "foe_health": 0, "foe_points": 0, "foe_bombs": 0}
+    )
+    assert host.turn is Side.OPPONENT
+
+
+def test_a_peer_bonus_is_described_from_this_end():
+    """A summary written where the notes were picked would arrive in the
+    wrong person: their "you gain 12 health" reaches a player who gained
+    nothing. So the words are built from the numbers on the reading side."""
+    host, _joiner = _online_pair()
+    events = host.apply_peer_bonus(
+        {"health": 12, "points": 0, "bullets": 0, "restores": 0, "bombs": 1,
+         "foe_health": -9, "foe_points": 0, "foe_bombs": 0}
+    )
+    from fusionfire.game.events import BonusFinished
+
+    said = [e.summary for e in events if isinstance(e, BonusFinished)]
+    assert said, "the peer's bonus was applied silently"
+    text = said[0]
+    assert "Joiner gains 12 health" in text, text
+    assert "you lose 9 health" in text, text
+    assert "gains 1 bomb;" in text or "gains 1 bomb" in text, text
+    assert "1 bombs" not in text, f"pluralised a single bomb: {text}"
+
+
+def test_a_peer_who_marked_nothing_says_so():
+    host, _joiner = _online_pair()
+    from fusionfire.game.events import BonusFinished
+
+    events = host.apply_peer_bonus(
+        {"health": 0, "points": 0, "bullets": 0, "restores": 0, "bombs": 0,
+         "foe_health": 0, "foe_points": 0, "foe_bombs": 0}
+    )
+    said = [e.summary for e in events if isinstance(e, BonusFinished)]
+    assert said == ["Joiner marked nothing."], said
 
 def test_loading_the_gun_emits_no_speech(engine):
     from fusionfire.game.events import Say
