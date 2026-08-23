@@ -387,6 +387,13 @@ class GamePanel(wx.Panel):
         )
 
     def _do_cheat_prompt(self) -> None:
+        # First, because it holds whatever the difficulty and the unlock say.
+        # Refusing to open the prompt at all is the point: it is invisible,
+        # so a player let into it would be typing a code into nothing and
+        # only find out it was refused after pressing Enter.
+        if self.engine.online:
+            self.speech.report("Cheats are off in an online match.")
+            return
         if not self.engine.difficulty.cheats_allowed:
             self.speech.report("Cheats are disabled on this difficulty.")
             return
@@ -402,7 +409,10 @@ class GamePanel(wx.Panel):
 
     def _submit_cheat(self) -> None:
         result = self.cheat.submit(
-            self.engine.player, self.engine.opponent, self.engine.difficulty
+            self.engine.player,
+            self.engine.opponent,
+            self.engine.difficulty,
+            online=self.engine.online,
         )
         if result is not None:
             self.presenter.report(result.message)

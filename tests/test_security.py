@@ -345,6 +345,48 @@ def test_cheats_are_refused_on_impossible():
     assert player.bullets == before, "the cheat must not have run"
 
 
+@pytest.mark.parametrize(
+    "code",
+    ["10 bullets", "50 health", "60 machinedamage", "500 points", "5 bombs"],
+)
+def test_no_cheat_runs_in_an_online_match(code):
+    """Not one of them, whatever the difficulty happens to allow.
+
+    Cheating a person rather than a machine is the reason. That they would
+    not even work is the other one: every cheat writes to this end's engine
+    and nothing goes on the wire, so the opponent's copy of the match would
+    never hear about the health gained or the damage dealt and the two would
+    stop agreeing about the fight.
+    """
+    player = Combatant(name="P", health=50, bullets=0, restores=0, bombs=0, points=0)
+    opponent = Combatant(name="O", health=80)
+    before = (player.health, player.bullets, player.restores, player.bombs,
+              player.points, opponent.health)
+
+    result = cheats.apply(code, player, opponent, INTERMEDIATE, online=True)
+
+    assert not result.ok
+    assert "online" in result.message.lower(), result.message
+    assert (player.health, player.bullets, player.restores, player.bombs,
+            player.points, opponent.health) == before, "a cheat ran online"
+
+
+def test_cheats_still_run_offline():
+    """The guard must refuse online matches, not every match."""
+    player = Combatant(name="P", bullets=0)
+    result = cheats.apply("10 bullets", player, Combatant(name="C"), INTERMEDIATE)
+    assert result.ok
+    assert player.bullets == 10
+
+
+def test_the_unlock_file_says_cheats_are_off_online(tmp_path, monkeypatch):
+    """The codes are handed over in a file, so the file has to carry the
+    rule -- otherwise it is only discoverable by pressing C and being told."""
+    monkeypatch.setattr(paths, "cheats_file", lambda: tmp_path / "cheats.txt")
+    cheats.write_cheat_file()
+    assert "online" in (tmp_path / "cheats.txt").read_text(encoding="utf-8").lower()
+
+
 def test_health_cheat_cannot_exceed_the_maximum():
     player = Combatant(name="P", health=90)
     cheats.apply("100 health", player, Combatant(name="C"), INTERMEDIATE)

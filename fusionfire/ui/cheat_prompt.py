@@ -61,13 +61,15 @@ class CheatPrompt:
         self.audio.play("type", volume=0.4)
 
     # ------------------------------------------------------------------
-    def submit(self, player, opponent, difficulty) -> cheats.CheatResult | None:
+    def submit(
+        self, player, opponent, difficulty, *, online: bool = False
+    ) -> cheats.CheatResult | None:
         """Validate and apply. Returns the result, or None if not open."""
         if not self.active:
             return None
         text, self.buffer = self.buffer, ""
         self.active = False
 
-        result = cheats.apply(text, player, opponent, difficulty)
+        result = cheats.apply(text, player, opponent, difficulty, online=online)
         self.audio.play("select" if result.ok else "error")
         return result

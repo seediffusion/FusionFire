@@ -16,7 +16,7 @@ Everything that happens is announced through your screen reader and sent to your
 
 The optional power weapon takes two minutes to charge and stays usable for three minutes. Press 6 to fire the power weapon. Upon pressing 6, you will hear the weapon preparing to fire, a drum roll and building music playing all the while. As the weapon fires, you'll hear a massive explosion. Did you blow that bastard computer sky high, did the machine activate its cyber defences and make you blow your own balls off, or did you miss the mark completely? You only get one use of the power weapon. Once it has been fired, it cannot be recharged and is gone for the rest of the match. Use it wisely... or die trying!
 
-Score thirty points in a single match and the cheat codes unlock permanently. The prompt is invisible, exactly as it was in 2008: a short bang tells you it is open, every character you type is spoken back by a recorded voice, Enter submits and Escape backs out.
+Score thirty points in a single match and the cheat codes unlock permanently. The prompt is invisible, exactly as it was in 2008: a short bang tells you it is open, every character you type is spoken back by a recorded voice, Enter submits and Escape backs out. It does not open in an online match, where the other side is a person rather than a machine.
 
 You can play a second person over the internet. By default it is quick play via a room code. An encrypted mode is also available, where a shared passphrase encrypts and authenticates the match.
 
@@ -199,7 +199,7 @@ Speech and braille go through Prism, which talks to whichever screen reader is a
 uv run pytest
 ```
 
-519 tests. The rules, the bonus round, the cheat parser, the name generator and the calendar are pure Python and run in a fraction of a second. On top of those, the suite opens real sockets and completes real TLS handshakes to prove a wrong passphrase cannot connect, boots the actual application and plays a match through the same calls the keyboard and gamepad use, drives a stand-in controller to check that the button under your thumb is the one the game thinks it is, builds every dialog to check its labels line up, and asserts that no user-facing text contains a character the speech backend would refuse.
+637 tests. The rules, the bonus round, the cheat parser, the name generator and the calendar are pure Python and run in a fraction of a second. On top of those, the suite opens real sockets and completes real TLS handshakes to prove a wrong passphrase cannot connect, boots the actual application and plays a match through the same calls the keyboard and gamepad use, drives a stand-in controller to check that the button under your thumb is the one the game thinks it is, builds every dialog to check its labels line up, and asserts that no user-facing text contains a character the speech backend would refuse.
 
 ## Credits
 

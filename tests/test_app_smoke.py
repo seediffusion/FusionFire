@@ -1216,6 +1216,50 @@ def test_the_cheat_prompt_applies_a_valid_code(match):
     assert ctx.engine.player.bullets >= 25
 
 
+def test_the_cheat_prompt_will_not_open_in_an_online_match(online_match):
+    """Refusing to open it is the point. The prompt is invisible, so a
+    player let into it would be typing a code into nothing and only find out
+    it was refused after pressing Enter."""
+    ctx, panel, _net = online_match
+    # The panel speaks its refusals through its own speech handle rather
+    # than the presenter's, so that is the one to listen to.
+    heard = _SpeechLog()
+    panel.speech = heard
+
+    panel.handle_action(Action.CHEAT_PROMPT)
+
+    assert not panel.cheat.active, "the cheat prompt opened in an online match"
+    assert heard.spoken, "the player was told nothing"
+    assert "online" in heard.spoken[-1].lower(), heard.spoken
+
+
+def test_the_cheat_prompt_still_opens_offline(match, monkeypatch):
+    """The guard has to refuse online matches, not every match."""
+    from fusionfire.game import cheats
+
+    monkeypatch.setattr(cheats, "unlocked", lambda points=0: True)
+    ctx, panel = match
+
+    panel.handle_action(Action.CHEAT_PROMPT)
+
+    assert panel.cheat.active, "the cheat prompt stopped opening offline"
+    panel.cheat.cancel()
+
+
+def test_an_online_cheat_is_refused_even_if_the_prompt_is_forced_open(online_match):
+    """The prompt is the door; the rule lives behind it as well, so a way
+    round the door is not a way round the rule."""
+    ctx, panel, _net = online_match
+    panel.cheat.open()
+    for char in "50 health":
+        panel.cheat.type_char(char)
+    ctx.engine.player.health = 40
+
+    panel._submit_cheat()
+
+    assert ctx.engine.player.health == 40, "a cheat ran in an online match"
+
+
 def test_a_bonus_result_folds_into_the_match(match):
     from fusionfire.game.bonus import BonusRound
 

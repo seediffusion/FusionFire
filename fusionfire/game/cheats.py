@@ -99,8 +99,19 @@ def parse(text: str) -> tuple[str, int] | None:
     return name, int(quantity_text)
 
 
-def apply(text: str, player, opponent, difficulty) -> CheatResult:
-    """Validate and run a cheat against the live match."""
+def apply(text: str, player, opponent, difficulty, *, online: bool = False) -> CheatResult:
+    """Validate and run a cheat against the live match.
+
+    ``online`` refuses outright. Every cheat here writes to the local engine
+    and nothing else, so online they would not even work as cheating: the
+    health, the bullets and the damage dealt to ``opponent`` all land on this
+    end's copy of the match, and the other player's engine never hears about
+    any of it. The two would simply stop agreeing about the fight. That they
+    would also be cheating a person rather than a machine is the better
+    reason, and either one is enough.
+    """
+    if online:
+        return CheatResult(False, "Cheats are off in an online match.")
     if not difficulty.cheats_allowed:
         return CheatResult(False, "Cheats are disabled on this difficulty.")
 
@@ -159,7 +170,7 @@ def write_cheat_file() -> str:
         lines.append(f"  {cheat.name.ljust(width)}  {cheat.description} (max {cheat.max_quantity})")
     lines += [
         "",
-        "Cheats do not work on Impossible.",
+        "Cheats do not work on Impossible, or in an online match.",
         "",
     ]
     text = "\n".join(lines)
