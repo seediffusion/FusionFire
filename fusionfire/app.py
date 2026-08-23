@@ -401,6 +401,7 @@ class AppContext:
             "settings": self.show_settings,
             "help": lambda: self.frame.show_help(),
             "about": lambda: self.frame.show_about(),
+            "updates": self.check_for_updates,
             "exit": lambda: self.frame.Close(),
         }
         handler = handlers.get(key)

@@ -158,6 +158,9 @@ def test_every_menu_entry_resolves_to_a_handler(app_ctx, monkeypatch):
         monkeypatch.setattr(app_ctx, name, lambda n=name: called.append(n))
     monkeypatch.setattr(app_ctx.frame, "show_help", lambda: called.append("help"))
     monkeypatch.setattr(app_ctx.frame, "show_about", lambda: called.append("about"))
+    monkeypatch.setattr(
+        app_ctx, "check_for_updates", lambda **k: called.append("updates")
+    )
     monkeypatch.setattr(app_ctx.frame, "Close", lambda: called.append("exit"))
 
     for _label, key in MENU_ITEMS:
@@ -166,7 +169,7 @@ def test_every_menu_entry_resolves_to_a_handler(app_ctx, monkeypatch):
     # Every entry but "stats", which renders a panel in place rather than
     # delegating, must have reached its handler exactly once.
     assert called == ["start_offline", "start_online", "show_settings",
-                      "help", "about", "exit"]
+                      "help", "about", "updates", "exit"]
     from fusionfire.ui.main_frame import StatsPanel
 
     assert isinstance(app_ctx.frame.content, StatsPanel)

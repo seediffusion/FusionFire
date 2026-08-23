@@ -189,7 +189,7 @@ Saying yes downloads and unpacks the new build under your own user folder first,
 
 That last step is a small helper script, because Windows will not let a running program overwrite its own executable. It is also what makes the update work when the game lives somewhere you cannot write to, such as `C:\Program Files\Fusion Fire`. Windows then asks for permission once, after you have already agreed to update, and the game is handed back to your desktop rather than left running as an administrator.
 
-Turn the startup check off under Settings → Game and the game contacts nobody on its own. Check for updates on the Help menu still works whenever you ask.
+Turn the startup check off under Settings → Game and the game contacts nobody on its own. Check for updates is on the main menu, and on the Help menu, and still works whenever you ask.
 
 ## Accessibility
 

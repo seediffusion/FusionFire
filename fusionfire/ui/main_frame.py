@@ -20,6 +20,10 @@ from .widgets import confirm, field_label, message, review_box, stack
 log = logging.getLogger(__name__)
 
 
+#: The front menu, in the order it is arrowed through. Updates sit beside
+#: About, which is the other entry about the program rather than the game,
+#: and second from last so that adding it moved only Exit for anyone who
+#: already knows the list by position.
 MENU_ITEMS = [
     ("Play offline", "offline"),
     ("Play online", "online"),
@@ -27,6 +31,7 @@ MENU_ITEMS = [
     ("Settings", "settings"),
     ("Hotkeys", "help"),
     ("About", "about"),
+    ("Check for updates", "updates"),
     ("Exit", "exit"),
 ]
 

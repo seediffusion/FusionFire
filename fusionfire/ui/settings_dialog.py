@@ -371,7 +371,8 @@ class SettingsDialog(wx.Dialog):
         updates_hint = wx.StaticText(
             page,
             label=(
-                "Says nothing unless there is one. The Help menu checks on demand."
+                "Says nothing unless there is one. Check for updates on the "
+                "main menu checks whenever you ask."
             ),
         )
         updates_hint.Wrap(440)
