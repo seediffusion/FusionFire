@@ -15,6 +15,7 @@ from __future__ import annotations
 import ctypes
 import gc
 import sys
+import time
 
 import pytest
 
@@ -38,6 +39,7 @@ def app_ctx(tmp_path, monkeypatch):
     ctx.settings.player_gender = "female"
     ctx.settings.confirm_exit = False
     ctx.settings.gamepad_enabled = False  # no SDL polling thread in tests
+    ctx.settings.check_for_updates = False  # and no call out to GitHub
     ctx.start()
     # Boot leaves the front menu behind the launch jingle; tests want the
     # menu, so skip past it. The hold-back itself is tested separately.
@@ -315,16 +317,18 @@ def test_labels_line_up_in_the_other_dialogs(app_ctx):
             [
                 ("address_field", "Opponent's address (name or IP):"),
                 ("port_field", "Port:"),
-                ("addresses", "Give your opponent one of these addresses:"),
+                ("addresses", "Address to listen on:"),
                 ("relay_field", "Relay server (name or IP):"),
                 ("relay_port_field", "Port:"),
-                ("pass_field", "Room code (both players type the same code):"),
+                ("pass_field", "Room code:"),
+                ("bullets_field", "Bullets each:"),
+                ("restores_field", "Restores each:"),
             ],
         ),
         (
             lambda: _encrypted_online_dialog(frame, app_ctx.settings),
             [
-                ("pass_field", "Shared passphrase (both players must type the same one):"),
+                ("pass_field", "Shared passphrase:"),
             ],
         ),
     ]
@@ -2457,6 +2461,676 @@ def online_match(app_ctx, monkeypatch):
     engine.start(first=Side.PLAYER)
     engine.begin_play()
     return app_ctx, panel, net
+
+
+# ----------------------------------------------------------------------
+# How much the online dialog says
+#
+# A disabled control is still in the reading order, so greying out the half
+# of the dialog that does not apply left a screen reader working through
+# both sets of fields and both explanations before reaching the ones the
+# player had chosen. The unused half is hidden now, and these say so.
+# ----------------------------------------------------------------------
+def _visible_text(window) -> list[str]:
+    """Every static line a screen reader would actually reach.
+
+    ``IsShown`` is a window's own flag rather than whether an ancestor hid
+    it, so a hidden panel's children still claim to be shown. Skipping the
+    whole subtree is what makes the answer true.
+    """
+    found = []
+    for child in window.GetChildren():
+        if not child.IsShown():
+            continue
+        if isinstance(child, wx.StaticText) and child.GetLabel().strip():
+            found.append(child.GetLabel())
+        found.extend(_visible_text(child))
+    return found
+
+
+def _online_dialog(frame, settings, *, connection=0, mode=0, secure=0):
+    from fusionfire.ui.online_dialog import OnlineDialog
+
+    dialog = OnlineDialog(frame, settings)
+    dialog.connection_choice.SetSelection(connection)
+    dialog.mode.SetSelection(mode)
+    dialog.security_choice.SetSelection(secure)
+    dialog._sync()
+    return dialog
+
+
+def test_relay_mode_does_not_read_out_the_direct_fields(app_ctx):
+    dialog = _online_dialog(app_ctx.frame, app_ctx.settings, connection=0)
+    try:
+        text = " ".join(_visible_text(dialog))
+        assert "Relay server" in text
+        assert "Opponent's address" not in text
+        assert "Address to listen on" not in text
+    finally:
+        dialog.Destroy()
+
+
+def test_direct_mode_does_not_read_out_the_relay_fields(app_ctx):
+    dialog = _online_dialog(app_ctx.frame, app_ctx.settings, connection=1)
+    try:
+        text = " ".join(_visible_text(dialog))
+        assert "Relay server" not in text
+        assert "First to join hosts" not in text
+    finally:
+        dialog.Destroy()
+
+
+def test_a_host_is_not_read_the_joiners_field_and_the_other_way_round(app_ctx):
+    hosting = _online_dialog(app_ctx.frame, app_ctx.settings, connection=1, mode=0)
+    try:
+        text = " ".join(_visible_text(hosting))
+        assert "Address to listen on" in text
+        assert "Opponent's address" not in text
+    finally:
+        hosting.Destroy()
+
+    joining = _online_dialog(app_ctx.frame, app_ctx.settings, connection=1, mode=1)
+    try:
+        text = " ".join(_visible_text(joining))
+        assert "Opponent's address" in text
+        assert "Address to listen on" not in text
+    finally:
+        joining.Destroy()
+
+
+def test_quick_play_over_a_direct_connection_has_no_room_code(app_ctx):
+    """It never did have one -- the field was shown by an off-by-one in
+    wx.Sizer.Show, which takes an index and was being handed a bool."""
+    dialog = _online_dialog(app_ctx.frame, app_ctx.settings, connection=1, secure=0)
+    try:
+        text = " ".join(_visible_text(dialog))
+        assert "Room code" not in text
+        assert "Shared passphrase" not in text
+        assert not dialog.pass_field.IsShown()
+    finally:
+        dialog.Destroy()
+
+
+def test_the_secret_field_comes_back_when_it_is_needed(app_ctx):
+    """Hiding it is only right if showing it still works."""
+    dialog = _online_dialog(app_ctx.frame, app_ctx.settings, connection=1, secure=1)
+    try:
+        assert dialog.pass_field.IsShown()
+        assert dialog.copy_button.IsShown()
+        assert "Shared passphrase:" in _visible_text(dialog)
+    finally:
+        dialog.Destroy()
+
+
+def test_no_line_in_the_dialog_is_a_paragraph(app_ctx):
+    """Every one of these is read out in full, every time. The longest is a
+    sentence, not an explanation of the design."""
+    for connection in (0, 1):
+        for mode in (0, 1):
+            for secure in (0, 1):
+                dialog = _online_dialog(
+                    app_ctx.frame, app_ctx.settings,
+                    connection=connection, mode=mode, secure=secure,
+                )
+                try:
+                    for line in _visible_text(dialog):
+                        assert len(line) <= 130, (
+                            f"{len(line)} characters to sit through: {line!r}"
+                        )
+                finally:
+                    dialog.Destroy()
+
+
+# ----------------------------------------------------------------------
+# Direct peer to peer, hosting
+#
+# Both of these were reported together, and they compounded: the address
+# list looked like a field you were meant to fill in, and then OK failed
+# with "Address needed", which made it look like you had failed to fill it
+# in. One of them made the mode unusable outright.
+# ----------------------------------------------------------------------
+def _hosting_dialog(frame, settings):
+    from fusionfire.ui.online_dialog import OnlineDialog
+
+    dialog = OnlineDialog(frame, settings)
+    dialog.connection_choice.SetSelection(1)  # direct peer to peer
+    dialog.mode.SetSelection(0)               # host and wait
+    dialog._sync()
+    return dialog
+
+
+def test_hosting_a_direct_game_is_not_asked_for_an_address(app_ctx):
+    """The reported bug: OK answered "Address needed" to the one player who
+    has no address to give. A host is dialled; it does not dial."""
+    dialog = _hosting_dialog(app_ctx.frame, app_ctx.settings)
+    try:
+        dialog.address_field.SetValue("")  # disabled while hosting, so empty
+        assert dialog._apply() is True, "a host could not get out of the dialog"
+        assert dialog.connection == "p2p"
+        assert dialog.hosting is True
+    finally:
+        dialog.Destroy()
+
+
+def test_joining_a_direct_game_still_needs_the_hosts_address(app_ctx, monkeypatch):
+    """The check has to stay for the player it was written for."""
+    from fusionfire.ui import online_dialog
+
+    shown = []
+    monkeypatch.setattr(online_dialog, "message", lambda *a, **k: shown.append(a[2]))
+
+    dialog = online_dialog.OnlineDialog(app_ctx.frame, app_ctx.settings)
+    try:
+        dialog.connection_choice.SetSelection(1)
+        dialog.mode.SetSelection(1)  # join
+        dialog._sync()
+        dialog.address_field.SetValue("   ")
+
+        assert dialog._apply() is False
+        assert shown == ["Address needed"], shown
+    finally:
+        dialog.Destroy()
+
+
+def test_the_hosts_addresses_are_a_list_that_can_be_moved_through(app_ctx):
+    """The other half of the report: the addresses were a read-only block of
+    text with no way to pick one out of it."""
+    from fusionfire.ui.online_dialog import ALL_ADDRESSES
+
+    dialog = _hosting_dialog(app_ctx.frame, app_ctx.settings)
+    try:
+        assert isinstance(dialog.addresses, wx.ListBox)
+        assert dialog.addresses.GetCount() >= 2, "no address to choose between"
+        assert dialog.addresses.GetString(0) == ALL_ADDRESSES
+        assert dialog.addresses.GetSelection() == 0, "nothing was selected to start"
+    finally:
+        dialog.Destroy()
+
+
+def test_hosting_listens_everywhere_unless_an_address_is_picked(app_ctx):
+    """All interfaces is the default and has to stay the default: a player
+    should not have to know which network card their opponent arrives on."""
+    dialog = _hosting_dialog(app_ctx.frame, app_ctx.settings)
+    try:
+        assert dialog._apply() is True
+        assert dialog.bind_host == "", "hosting bound one interface by default"
+    finally:
+        dialog.Destroy()
+
+
+def test_picking_an_address_binds_to_that_one(app_ctx):
+    dialog = _hosting_dialog(app_ctx.frame, app_ctx.settings)
+    try:
+        dialog.addresses.SetSelection(1)
+        chosen = dialog.addresses.GetString(1)
+        assert dialog._apply() is True
+        assert dialog.bind_host == chosen
+    finally:
+        dialog.Destroy()
+
+
+def test_the_address_to_share_is_a_real_one_even_when_listening_on_all(app_ctx):
+    """"All addresses" is not something you can read out to anybody, so the
+    one offered for copying is the first real address -- the card the routing
+    table says would carry traffic off this machine."""
+    from fusionfire.ui.online_dialog import ALL_ADDRESSES
+
+    dialog = _hosting_dialog(app_ctx.frame, app_ctx.settings)
+    try:
+        shared = dialog._shareable_address()
+        assert shared and shared != ALL_ADDRESSES
+        assert shared == dialog.addresses.GetString(1)
+    finally:
+        dialog.Destroy()
+
+
+def test_hosting_does_not_forget_the_last_opponent_you_joined(app_ctx):
+    """The host leaves the opponent-address field empty, and saving that
+    would wipe the address a joiner had typed last time."""
+    app_ctx.settings.last_host = "friend.example.org"
+
+    dialog = _hosting_dialog(app_ctx.frame, app_ctx.settings)
+    try:
+        assert dialog._apply() is True
+        assert app_ctx.settings.last_host == "friend.example.org"
+    finally:
+        dialog.Destroy()
+
+
+def _quiet_session(session_class):
+    """A session with callbacks that go nowhere, for the socket-level tests."""
+    return session_class(
+        on_message=lambda message: None,
+        on_connected=lambda: None,
+        on_disconnected=lambda reason: None,
+    )
+
+
+def _spare_port() -> int:
+    """A port nothing is using. ``listen`` refuses 0, and rightly: the dialog
+    cannot offer it, so neither should the tests pretend it can."""
+    import socket
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+def test_listening_on_one_address_really_only_listens_there():
+    """A real socket, because the whole point of the option is what the
+    operating system does with it."""
+    from fusionfire.net.session import HostSession
+
+    session = _quiet_session(HostSession)
+    try:
+        session.listen(port=_spare_port(), secure=False, host="127.0.0.1")
+        assert session._listener is not None
+        assert session._listener.getsockname()[0] == "127.0.0.1"
+    finally:
+        session.close("done")
+
+
+def test_listening_on_no_particular_address_listens_on_all_of_them():
+    """The default, and the one that must not quietly narrow: a player who
+    picks nothing has to stay reachable on every card they own."""
+    from fusionfire.net.session import HostSession
+
+    session = _quiet_session(HostSession)
+    try:
+        session.listen(port=_spare_port(), secure=False)
+        assert session._listener.getsockname()[0] == "0.0.0.0"
+    finally:
+        session.close("done")
+
+
+def test_the_dialogs_chosen_address_reaches_the_socket(app_ctx, monkeypatch):
+    """The selection has to travel from the list to the bind, not stop in the
+    dialog with nobody reading it."""
+    from fusionfire.ui import online_dialog
+
+    real_dialog = online_dialog.OnlineDialog
+    bound = {}
+
+    class _Session:
+        is_host = True
+
+        def __init__(self, **kwargs):
+            pass
+
+        def listen(self, port=6000, passphrase="", *, secure=True, host=""):
+            bound["host"] = host
+            bound["port"] = port
+
+        def close(self, reason=""):
+            pass
+
+    def build(frame, settings):
+        dialog = real_dialog(frame, settings)
+        dialog.connection_choice.SetSelection(1)  # direct peer to peer
+        dialog.mode.SetSelection(0)               # host and wait
+        dialog._sync()
+        dialog.addresses.SetSelection(1)
+        dialog.port_field.SetValue(6123)
+        bound["wanted"] = dialog.addresses.GetString(1)
+        # What pressing OK does. ShowModal is stubbed out below, so the
+        # button handler that normally calls this never runs.
+        assert dialog._apply() is True
+        monkeypatch.setattr(dialog, "ShowModal", lambda: wx.ID_OK)
+        return dialog
+
+    monkeypatch.setattr(online_dialog, "OnlineDialog", build)
+    monkeypatch.setattr(online_dialog, "WaitingDialog", _DoneWaiting)
+    monkeypatch.setattr("fusionfire.net.session.HostSession", _Session)
+
+    app_ctx.start_online()
+
+    assert bound["port"] == 6123
+    assert bound["host"] == bound["wanted"], "the chosen address never reached the bind"
+
+
+def test_a_host_is_told_the_address_to_read_out(app_ctx, monkeypatch):
+    """A player waiting on somebody else to type an address should be told
+    what that address is, not told to go and find one."""
+    from fusionfire.ui import online_dialog
+
+    real_dialog = online_dialog.OnlineDialog
+    seen = {}
+
+    class _Session:
+        is_host = True
+
+        def __init__(self, **kwargs):
+            pass
+
+        def listen(self, **kwargs):
+            pass
+
+        def close(self, reason=""):
+            pass
+
+    def build(frame, settings):
+        dialog = real_dialog(frame, settings)
+        dialog.connection_choice.SetSelection(1)
+        dialog.mode.SetSelection(0)
+        dialog._sync()
+        seen["address"] = dialog._shareable_address()
+        assert dialog._apply() is True
+        monkeypatch.setattr(dialog, "ShowModal", lambda: wx.ID_OK)
+        return dialog
+
+    def waiting(parent, text):
+        seen["text"] = text
+        return _DoneWaiting(parent, text)
+
+    monkeypatch.setattr(online_dialog, "OnlineDialog", build)
+    monkeypatch.setattr(online_dialog, "WaitingDialog", waiting)
+    monkeypatch.setattr("fusionfire.net.session.HostSession", _Session)
+
+    app_ctx.start_online()
+
+    assert seen["address"] in seen["text"], seen["text"]
+
+
+class _DoneWaiting:
+    """Stands in for the modal "connecting" dialog, which cannot be opened in
+    a test without blocking the run on a real event loop."""
+
+    def __init__(self, parent=None, text: str = "") -> None:
+        self.text = text
+
+    def ShowModal(self):
+        return wx.ID_OK
+
+    def IsModal(self):
+        return False
+
+    def Destroy(self):
+        pass
+
+    def set_text(self, text):
+        self.text = text
+
+
+# ----------------------------------------------------------------------
+# The update check
+#
+# The check itself is covered in test_update.py, without wx. These are about
+# what the application does with the answer: it must not interrupt a player
+# who did not ask, must not say nothing to one who did, and must never reach
+# the network at all when the setting is off.
+# ----------------------------------------------------------------------
+def _drain(times: int = 4) -> None:
+    """Let the wx.CallAfter queue and the worker thread catch up."""
+    for _ in range(times):
+        time.sleep(0.05)
+        wx.YieldIfNeeded()
+
+
+def _fake_check(monkeypatch, result):
+    """Replace update.check with something that answers instantly."""
+    from fusionfire import update
+
+    calls = []
+
+    def check(*args, **kwargs):
+        calls.append(True)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(update, "check", check)
+    return calls
+
+
+def test_the_startup_check_follows_its_setting(app_ctx, monkeypatch):
+    """The one thing the game does over the network without being asked, so
+    the switch has to genuinely stop it -- and genuinely allow it, or the
+    test proves only that a disabled feature is disabled."""
+    from fusionfire import update
+
+    calls = _fake_check(monkeypatch, update.Release(tag="1", newer=False))
+
+    app_ctx.settings.check_for_updates = False
+    app_ctx._check_updates_at_startup()
+    _drain()
+    assert calls == [], "the startup check ran with the setting switched off"
+
+    app_ctx.settings.check_for_updates = True
+    app_ctx._check_updates_at_startup()
+    _drain()
+    assert calls, "the startup check did not run with the setting switched on"
+
+
+def test_a_startup_check_that_finds_nothing_says_nothing(app_ctx, monkeypatch):
+    from fusionfire import update
+
+    _fake_check(monkeypatch, update.Release(tag="1", newer=False))
+    heard = _listen(app_ctx)
+
+    app_ctx.check_for_updates(announce=False)
+    _drain()
+
+    assert not heard.spoken, f"an automatic check interrupted with {heard.spoken}"
+
+
+def test_a_startup_check_that_cannot_reach_github_says_nothing(app_ctx, monkeypatch):
+    """A player on a machine with no network did not ask a question, so
+    there is no answer they need."""
+    from fusionfire import update
+
+    _fake_check(monkeypatch, update.UpdateError("no route to host"))
+    heard = _listen(app_ctx)
+
+    app_ctx.check_for_updates(announce=False)
+    _drain()
+
+    assert not heard.spoken, f"a failed automatic check spoke up: {heard.spoken}"
+
+
+def test_a_check_the_player_asked_for_answers_either_way(app_ctx, monkeypatch):
+    from fusionfire import update
+
+    _fake_check(monkeypatch, update.Release(tag="1", newer=False))
+    heard = _listen(app_ctx)
+
+    app_ctx.check_for_updates()
+    _drain()
+
+    assert any("up to date" in line for line in heard.spoken), heard.spoken
+
+
+def test_a_check_the_player_asked_for_reports_a_failure(app_ctx, monkeypatch):
+    from fusionfire import update
+
+    _fake_check(monkeypatch, update.UpdateError("GitHub is having a day"))
+    heard = _listen(app_ctx)
+
+    app_ctx.check_for_updates()
+    _drain()
+
+    assert any("having a day" in line for line in heard.spoken), heard.spoken
+
+
+def test_saying_not_now_downloads_nothing(app_ctx, monkeypatch):
+    """Nothing is fetched until the player has said yes."""
+    from fusionfire import update
+
+    downloads = []
+    monkeypatch.setattr(
+        update, "download", lambda *a, **k: downloads.append(a) or a[0]
+    )
+    monkeypatch.setattr(
+        "fusionfire.ui.update_dialog.UpdatePrompt.ShowModal", lambda self: wx.ID_CANCEL
+    )
+
+    app_ctx._offer_update(update.Release(tag="9999", newer=True, notes="notes"))
+    _drain()
+
+    assert downloads == [], "declining the update still downloaded it"
+
+
+def test_a_second_check_does_not_pile_up_on_the_first(app_ctx, monkeypatch):
+    from fusionfire import update
+
+    calls = _fake_check(monkeypatch, update.Release(tag="1", newer=False))
+    app_ctx._update_busy = True
+
+    app_ctx.check_for_updates()
+
+    assert calls == [], "a second check started while one was already running"
+
+
+def test_the_prompt_names_both_versions(app_ctx):
+    from fusionfire import __version__
+    from fusionfire.update import Release
+    from fusionfire.ui.update_dialog import UpdatePrompt
+
+    prompt = UpdatePrompt(app_ctx.frame, Release(tag="9999", newer=True), __version__)
+    try:
+        assert "9999" in prompt.announcement()
+        assert prompt.notes.GetValue()  # never an empty box to arrow through
+        assert prompt.GetSizer() is not None
+    finally:
+        prompt.Destroy()
+
+
+def test_the_progress_dialog_stops_the_download_when_cancelled(app_ctx):
+    from fusionfire.ui.update_dialog import UpdateProgressDialog
+
+    dialog = UpdateProgressDialog(app_ctx.frame)
+    try:
+        assert dialog.on_progress(1024, 4096) is True
+        dialog._on_cancel(None)
+        assert dialog.on_progress(2048, 4096) is False
+    finally:
+        dialog.Destroy()
+
+
+# ----------------------------------------------------------------------
+# Online: whose supply numbers win
+#
+# Both players fill the numbers in, because under the relay neither knows
+# which of them will be the host until the relay says so. The host's are the
+# ones that count, and the opponent no longer has an endless magazine.
+# ----------------------------------------------------------------------
+class _RoleNet(_FakeNet):
+    def __init__(self, is_host: bool) -> None:
+        super().__init__()
+        self.is_host = is_host
+
+
+def _hello(name="Alan Turing", gender="male", **supplies) -> dict:
+    return {"type": "hello", "name": name, "gender": gender, **supplies}
+
+
+def test_the_hosts_supply_numbers_are_the_ones_used(app_ctx):
+    app_ctx.net = _RoleNet(is_host=True)
+    app_ctx._online_supplies = (4, 2)
+
+    app_ctx._begin_online_match(_hello(bullets=99, restores=99))
+
+    engine = app_ctx.engine
+    assert (engine.player.bullets, engine.player.restores) == (4, 2)
+    assert (engine.opponent.bullets, engine.opponent.restores) == (4, 2), (
+        "the joiner's numbers overrode the host's"
+    )
+
+
+def test_a_joiner_takes_the_numbers_that_arrived(app_ctx):
+    app_ctx.net = _RoleNet(is_host=False)
+    app_ctx._online_supplies = (99, 99)  # what this player asked for, and does not get
+
+    app_ctx._begin_online_match(_hello(bullets=6, restores=3))
+
+    engine = app_ctx.engine
+    assert (engine.player.bullets, engine.player.restores) == (6, 3)
+    assert (engine.opponent.bullets, engine.opponent.restores) == (6, 3)
+
+
+def test_an_opponent_too_old_to_send_supplies_lands_on_the_default(app_ctx):
+    """A build from before any of this omits both fields. Both ends then use
+    the same default rather than each guessing at the other."""
+    from fusionfire.game.constants import DEFAULT_ONLINE_SUPPLY
+
+    app_ctx.net = _RoleNet(is_host=False)
+    app_ctx._begin_online_match(_hello())
+
+    engine = app_ctx.engine
+    assert engine.player.bullets == DEFAULT_ONLINE_SUPPLY
+    assert engine.opponent.bullets == DEFAULT_ONLINE_SUPPLY
+
+
+def test_nobody_online_gets_an_endless_magazine(app_ctx):
+    """The reported problem: the opponent could never be worn down, whatever
+    the difficulty happened to be set to locally."""
+    app_ctx.settings.difficulty = "coward"  # the tier that hands out UNLIMITED
+    app_ctx.net = _RoleNet(is_host=True)
+    app_ctx._online_supplies = (10, 10)
+
+    app_ctx._begin_online_match(_hello())
+
+    engine = app_ctx.engine
+    assert not engine.opponent.unlimited_bullets
+    assert not engine.opponent.unlimited_restores
+    assert not engine.player.unlimited_bullets
+    assert not engine.player.unlimited_restores
+
+
+def test_the_opponents_shots_run_their_own_ammunition_down(app_ctx):
+    """Each player owns their own engine and the opponent inside it is a
+    mirror. If the mirror never spends anything, pressing 8 for the
+    opponent's status reports a full magazine for someone who has just fired
+    their last round."""
+    app_ctx.net = _RoleNet(is_host=True)
+    app_ctx._online_supplies = (3, 2)
+    app_ctx._begin_online_match(_hello())
+    engine = app_ctx.engine
+    engine.start(first=Side.OPPONENT)
+    engine.begin_play()
+    engine.turn = Side.OPPONENT
+
+    app_ctx._apply_remote_move(
+        {"type": "strike", "weapon": "gun", "outcome": "miss", "damage": 0}
+    )
+    assert engine.opponent.bullets == 2, "the opponent's shot cost them nothing"
+    assert not engine.opponent.gun_loaded, "the opponent's gun stayed loaded"
+
+    engine.turn = Side.OPPONENT
+    engine.opponent.health = 40
+    app_ctx._apply_remote_move({"type": "heal", "amount": 20})
+    assert engine.opponent.restores == 1, "the opponent's restore cost them nothing"
+
+
+def test_a_whip_costs_the_opponent_no_bullets(app_ctx):
+    """Only the gun spends ammunition, on the mirror as in the rules."""
+    app_ctx.net = _RoleNet(is_host=True)
+    app_ctx._online_supplies = (3, 2)
+    app_ctx._begin_online_match(_hello())
+    engine = app_ctx.engine
+    engine.start(first=Side.OPPONENT)
+    engine.begin_play()
+    engine.turn = Side.OPPONENT
+
+    app_ctx._apply_remote_move(
+        {"type": "strike", "weapon": "whip", "outcome": "miss", "damage": 0}
+    )
+    assert engine.opponent.bullets == 3
+
+
+def test_the_online_dialogs_supply_fields_are_remembered(app_ctx):
+    from fusionfire.ui.online_dialog import OnlineDialog
+
+    dialog = OnlineDialog(app_ctx.frame, app_ctx.settings)
+    try:
+        dialog.relay_field.SetValue("relay.example.org")
+        dialog.bullets_field.SetValue(7)
+        dialog.restores_field.SetValue(2)
+        assert dialog._apply() is True
+        assert (dialog.bullets, dialog.restores) == (7, 2)
+        assert app_ctx.settings.online_bullets == 7
+        assert app_ctx.settings.online_restores == 2
+    finally:
+        dialog.Destroy()
 
 
 def test_firing_online_tells_the_other_player(online_match, monkeypatch):

@@ -474,12 +474,25 @@ class HostSession(NetSession):
         self._is_host = True
 
     def listen(
-        self, port: int = DEFAULT_PORT, passphrase: str = "", *, secure: bool = True
+        self,
+        port: int = DEFAULT_PORT,
+        passphrase: str = "",
+        *,
+        secure: bool = True,
+        host: str = "",
     ) -> None:
         """Bind and accept in the background. Raises on a bad bind.
 
         With ``secure=False`` the match runs over a plain socket with no
         passphrase — casual play, for two people who just want to fight.
+
+        ``host`` is the local address to listen on. Empty means every one of
+        them, which is the right default and the one to keep: a player should
+        not have to work out which of their network cards their opponent will
+        arrive on, and picking the wrong one is a match that never connects
+        for a reason nothing on screen explains. It is offered because a
+        machine with a VPN up has a real reason to say "the LAN card, not
+        that one".
         """
         if not 1 <= port <= 65535:
             raise ValueError("Port must be between 1 and 65535.")
@@ -492,7 +505,7 @@ class HostSession(NetSession):
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
-            listener.bind(("0.0.0.0", port))
+            listener.bind((host or "0.0.0.0", port))
             listener.listen(1)
         except OSError:
             listener.close()
@@ -641,6 +654,12 @@ class RelaySession(NetSession):
     splices the plain sockets. The relay itself never knows which mode a
     room is in, because it only ever sees an opaque 16-byte token.
 
+    One relay carries as many matches at once as it has rooms, and the rooms
+    do not touch: a match in progress is unaffected by anyone else arriving,
+    starting, or finishing. The single thing a room cannot do is hold three
+    people, so a third player dialling in on a key that already has two is
+    told to pick another one -- and only that player is told anything.
+
     From this class outward the session is exactly a
     :class:`HostSession` or :class:`JoinSession`; which one depends on the
     role byte, which is why ``is_host`` is set here rather than by the
@@ -697,9 +716,15 @@ class RelaySession(NetSession):
 
         if role == ROLE_FULL:
             raw.close()
+            key = "passphrase" if secure else "room code"
+            # The server is not busy and the match is not over: one specific
+            # room is occupied, and every other room on the same server is
+            # still free. Saying so is the difference between "try again
+            # later" and "change one field and go", which is why the old
+            # wording -- which read like the server was full -- is gone.
             self._shutdown(
-                "That relay server already has two players for this passphrase. "
-                "Wait a moment and try again, or use a different passphrase."
+                f"Two players are already using that {key}. Pick a different "
+                f"one; the server is fine, that room is busy."
             )
             return
         if role not in (ROLE_HOST, ROLE_JOINER):

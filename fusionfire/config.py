@@ -27,7 +27,17 @@ from . import paths
 
 log = logging.getLogger(__name__)
 
-SETTINGS_VERSION = 1
+SETTINGS_VERSION = 2
+
+#: The relay spy service the game asks for a list of relay servers, unless
+#: the player points it somewhere else. Having one out of the box is the
+#: difference between "Play online" working on a first run and the player
+#: having to be told an address before they can find a single server.
+#:
+#: Still a plain setting, not a hard-coded address: clearing the field turns
+#: the lookup off, and typing another one moves it. Nothing is contacted
+#: until the player asks for the server list.
+DEFAULT_RELAY_SPY_URL = "https://fusion.seedy.cc:6363"
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -119,7 +129,23 @@ class Settings:
     last_relay_port: int = 6001
     #: A relay spy service that lists publicized relay servers. Empty disables
     #: the "get a list of publicized servers" button in the online dialog.
-    relay_spy_url: str = ""
+    relay_spy_url: str = DEFAULT_RELAY_SPY_URL
+    #: Bullets and health restores each player starts an online match with.
+    #: Both players fill these in and only the host's are used, because who
+    #: hosts a relayed match is decided by arrival order, after the dialog
+    #: has been answered. See :meth:`fusionfire.game.engine.Engine.apply_match_settings`.
+    online_bullets: int = 10
+    online_restores: int = 10
+
+    # Updates
+    #: Ask GitHub at startup whether a newer release exists. On by default,
+    #: because an audio game that quietly goes stale is one whose players
+    #: never hear about the fix they reported. It is a switch and not a
+    #: fixed behaviour because it is the one thing the game does over the
+    #: network without being asked, and some players will not want it --
+    #: turning it off leaves Check for updates on the Help menu, which asks
+    #: only when the player does.
+    check_for_updates: bool = True
 
     # ------------------------------------------------------------------
     # Validation
@@ -144,6 +170,7 @@ class Settings:
         self.play_intro_music = bool(self.play_intro_music)
         self.gamepad_enabled = bool(self.gamepad_enabled)
         self.gamepad_vibration = bool(self.gamepad_vibration)
+        self.check_for_updates = bool(self.check_for_updates)
 
         # Through _as_token first: a hand-edited file can hold a list or a
         # dict here, and an unhashable value would take the membership test
@@ -191,6 +218,15 @@ class Settings:
             self.last_relay_port = 6001
         self.relay_spy_url = _as_url(self.relay_spy_url)
 
+        from .game.constants import MAX_ONLINE_SUPPLY
+
+        self.online_bullets = int(
+            _clamp(_as_int(self.online_bullets, 10), 0, MAX_ONLINE_SUPPLY)
+        )
+        self.online_restores = int(
+            _clamp(_as_int(self.online_restores, 10), 0, MAX_ONLINE_SUPPLY)
+        )
+
         self.version = SETTINGS_VERSION
 
     # ------------------------------------------------------------------
@@ -221,8 +257,22 @@ class Settings:
                 setattr(settings, key, value)
             else:
                 log.debug("Ignoring unknown setting %r.", key)
+        settings._migrate(_as_int(raw.get("version"), 0))
         settings.normalise()
         return settings
+
+    def _migrate(self, from_version: int) -> None:
+        """Bring a settings file written by an older build up to date.
+
+        Keyed on the version the file was *written* with, not on whether a
+        value happens to look unset, so a player who deliberately turned
+        something off does not have it turned back on at every launch.
+        """
+        if from_version < 2 and not self.relay_spy_url:
+            # Version 1 had no default spy service, so every file from it
+            # carries an empty address that predates there being one to
+            # carry. Fill it in once; clearing it afterwards sticks.
+            self.relay_spy_url = DEFAULT_RELAY_SPY_URL
 
     def save(self, path: Path | None = None) -> None:
         path = path or paths.config_file()

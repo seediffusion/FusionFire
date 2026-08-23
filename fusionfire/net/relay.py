@@ -25,6 +25,19 @@ it does not like, but it cannot read one and cannot join it without the
 passphrase. It never needs to know which mode a room is in, because in both
 cases it only ever sees the opaque token.
 
+Many matches at once
+--------------------
+One relay carries as many matches as its room table holds, and the rooms are
+independent. Two players in room A are unaffected by anyone arriving in room
+B, by a room opening, or by one finishing — nothing in a room's lifetime
+reaches outside it. A room whose match has ended is replaced the moment
+someone dials that key again, rather than being handed out spent.
+
+The one thing a room will not do is hold three people. A third player who
+dials a key that already has two is told so and disconnected; the two who
+are playing never notice. That is the only case in which anybody is turned
+away, and it is the newcomer, never the match in progress.
+
 The first player to join a room is the host. They move first, and their
 session completes the server side of the handshake; the second player is the
 joiner. This is decided by arrival order alone, which is the whole point of

@@ -57,6 +57,16 @@ BONUS_COOLDOWN_ROUNDS = 4
 CHEAT_UNLOCK_POINTS = 30
 MAX_CHEAT_INPUT = 64
 
+# --- Online play --------------------------------------------------------
+#: Bullets and health restores each player starts an online match with when
+#: nobody says otherwise -- an opponent running a build from before the host
+#: decided the supplies, or one that leaves the fields out.
+DEFAULT_ONLINE_SUPPLY = 10
+#: The most of either a host may hand out. Bounded because the number travels
+#: on the wire: a modified client must not be able to deal itself a thousand
+#: bullets by editing one field of its hello.
+MAX_ONLINE_SUPPLY = 99
+
 # --- Miscellaneous ------------------------------------------------------
 AI_THINK_DELAY = (0.7, 1.8)
 VOLUME_STEP = 0.05

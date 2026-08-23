@@ -89,9 +89,8 @@ class SettingsDialog(wx.Dialog):
         intro_hint = wx.StaticText(
             page,
             label=(
-                "The intro music plays instead of the spoken ready message "
-                "when the game starts. The first Enter on the main menu "
-                "skips it."
+                "Plays at startup instead of the ready message. The first "
+                "Enter skips it."
             ),
         )
         intro_hint.Wrap(440)
@@ -104,8 +103,7 @@ class SettingsDialog(wx.Dialog):
         hint = wx.StaticText(
             page,
             label=(
-                "Testing switches to the device and plays a gunshot through "
-                "it. Cancel puts the old device back."
+                "Plays a gunshot through it. Cancel puts the old one back."
             ),
         )
         hint.Wrap(440)
@@ -172,9 +170,8 @@ class SettingsDialog(wx.Dialog):
         note = wx.StaticText(
             page,
             label=(
-                "Automatic picks whichever screen reader is running, and falls "
-                "back to the system voice if none is. Changing this takes "
-                "effect as soon as you press OK."
+                "Automatic uses your screen reader, or the system voice "
+                "if none is running."
             ),
         )
         note.Wrap(440)
@@ -249,8 +246,7 @@ class SettingsDialog(wx.Dialog):
             self.voice_note.SetLabel(note)
         else:
             self.voice_note.SetLabel(
-                "Your screen reader owns its voice, rate and pitch. Change "
-                "them in the screen reader itself and the game will follow."
+                "Your screen reader owns its voice. Change it there."
             )
         self.voice_note.Wrap(440)
         self.voice_note.GetParent().Layout()
@@ -336,9 +332,8 @@ class SettingsDialog(wx.Dialog):
         theme_hint = wx.StaticText(
             page,
             label=(
-                "Windows 10 and 11 have a light and dark setting, and the "
-                "game follows it as soon as you change it. Windows 8.1 and 7 "
-                "have no such setting, so the choice is made here instead."
+                "System follows Windows 10 and 11 as you change it. Older "
+                "Windows has no such setting, so pick one here."
             ),
         )
         theme_hint.Wrap(440)
@@ -351,6 +346,19 @@ class SettingsDialog(wx.Dialog):
         self.power_weapon_on = wx.CheckBox(page, label="Bring the po&wer weapon by default")
         self.power_weapon_on.SetValue(self.settings.use_power_weapon)
         sizer.Add(self.power_weapon_on, 0, wx.ALL, 8)
+
+        self.updates_on = wx.CheckBox(page, label="Check for &updates at startup")
+        self.updates_on.SetValue(self.settings.check_for_updates)
+        sizer.Add(self.updates_on, 0, wx.ALL, 8)
+
+        updates_hint = wx.StaticText(
+            page,
+            label=(
+                "Says nothing unless there is one. The Help menu checks on demand."
+            ),
+        )
+        updates_hint.Wrap(440)
+        sizer.Add(updates_hint, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
 
         page.SetSizer(sizer)
         return page
@@ -367,11 +375,8 @@ class SettingsDialog(wx.Dialog):
         spy_hint = wx.StaticText(
             page,
             label=(
-                "Optional. A relay spy service publishes a list of relay "
-                "servers that have chosen to publicize themselves, so the "
-                "online dialog can offer them as a pickable list. Leave this "
-                "empty and you can still type any relay server's name or "
-                "address by hand."
+                "Lists relay servers to pick from. Contacted only when you "
+                "ask for the list. Clear it to turn the list off."
             ),
         )
         spy_hint.Wrap(440)
@@ -400,9 +405,8 @@ class SettingsDialog(wx.Dialog):
         vibration_hint = wx.StaticText(
             page,
             label=(
-                "A short flick for a lash and a heavier one for a gunshot, "
-                "so you can feel which of the two hit you before the status "
-                "line has said so. Only pads that can vibrate do."
+                "A short flick for a lash, a heavier one for a gunshot. "
+                "Only pads that can vibrate."
             ),
         )
         vibration_hint.Wrap(440)
@@ -426,12 +430,9 @@ class SettingsDialog(wx.Dialog):
         note = wx.StaticText(
             page,
             label=(
-                "Assignments follow the standard controller layout, with the "
-                "two weapons on the triggers. Outside a match the pad drives "
-                "the interface instead: the stick and D-pad move, A chooses, "
-                "B goes back, and the shoulders step between controls. Plug a "
-                "pad in at any time; it is picked up within a couple of "
-                "seconds."
+                "Standard layout, weapons on the triggers. Outside a match "
+                "the pad works the menus: A chooses, B goes back. Plug one in "
+                "any time."
             ),
         )
         note.Wrap(440)
@@ -542,6 +543,7 @@ class SettingsDialog(wx.Dialog):
             s.theme = chosen_theme
         s.stats_enabled = self.stats_on.GetValue()
         s.use_power_weapon = self.power_weapon_on.GetValue()
+        s.check_for_updates = self.updates_on.GetValue()
 
         s.gamepad_enabled = self.pad_on.GetValue()
         s.gamepad_vibration = self.pad_vibration.GetValue()

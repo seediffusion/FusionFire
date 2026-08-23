@@ -31,9 +31,9 @@ class SetupDialog(wx.Dialog):
         intro = wx.StaticText(
             panel,
             label=(
-                "Type your full name, first and last. Type one word and the "
-                "machine will name you itself, with commentary. Leave it "
-                "empty and it will name you without comment."
+                "First and last name. Type one word and the machine names "
+                "you, with commentary. Leave it empty and it names you "
+                "quietly."
             ),
         )
         intro.Wrap(430)
@@ -117,8 +117,8 @@ class OpponentDialog(wx.Dialog):
         hint = wx.StaticText(
             panel,
             label=(
-                "The power weapon takes two minutes to charge and stays usable "
-                "for three. It can also backfire onto you."
+                "Two minutes to charge, then usable for three. It can "
+                "backfire onto you."
             ),
         )
         hint.Wrap(430)

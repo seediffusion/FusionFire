@@ -11,7 +11,10 @@ from __future__ import annotations
 import contextlib
 import logging
 import logging.handlers
+import shutil
 import sys
+import threading
+from pathlib import Path
 
 import wx
 
@@ -88,11 +91,20 @@ class AppContext:
         #: True while a disconnection we caused is still on its way back to
         #: us through the session's callback.
         self._expect_disconnect = False
+        #: The bullets and restores this player asked for in the online
+        #: dialog. Sent in our hello; used only if the relay makes us host.
+        self._online_supplies = (
+            self.settings.online_bullets,
+            self.settings.online_restores,
+        )
         #: Set in start(), once there is a wx.App and a frame to theme.
         self.theme = None
         #: True while the launch jingle is holding the front menu back.
         self._intro_pending = False
         self._intro_timer = None
+        #: True while an update check or download is already in flight, so a
+        #: second one cannot be started on top of it.
+        self._update_busy = False
 
     # ------------------------------------------------------------------
     # Startup
@@ -118,6 +130,8 @@ class AppContext:
         if self.settings.gamepad_enabled:
             self.gamepad.start()
 
+        self._check_updates_at_startup()
+
         greeting = greetings.for_today(self.settings.birthday)
         if greeting is not None:
             self.show_menu()
@@ -131,6 +145,173 @@ class AppContext:
             self.presenter.report(
                 f"{__title__} {__version__} ready. Choose an option from the menu."
             )
+
+    # ------------------------------------------------------------------
+    # Updating
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _later(callback, *args) -> None:
+        """``wx.CallAfter`` that tolerates the window having gone already.
+
+        The update worker outlives nothing in particular: a player who quits
+        while a check is in flight leaves a thread holding a callback and no
+        application to run it on, and wx answers that with a RuntimeError
+        from deep inside a daemon thread. There is nothing to report at that
+        point -- the thing the result was for has been closed.
+        """
+        try:
+            if wx.GetApp() is None:
+                return
+            wx.CallAfter(callback, *args)
+        except RuntimeError:
+            log.debug("Dropped a background result; the application had closed.")
+
+    def _check_updates_at_startup(self) -> None:
+        """The automatic check, if the player left it switched on.
+
+        Quiet, and after everything else is up. A player whose connection is
+        down, or who plays on a machine with no network at all, is not told
+        about it: they did not ask a question, so there is no answer they
+        need. The switch is its own thing because this is the only moment the
+        game contacts anybody without being asked to.
+        """
+        if not self.settings.check_for_updates:
+            return
+        self.check_for_updates(announce=False)
+
+    def check_for_updates(self, *, announce: bool = True) -> None:
+        """Ask GitHub whether there is a newer release, on a worker thread.
+
+        ``announce`` is what separates the automatic check at startup from
+        the one on the Help menu. The automatic one says nothing unless there
+        is something to install; the one the player asked for answers either
+        way, including when the answer is that GitHub could not be reached.
+        """
+        if self._update_busy:
+            if announce:
+                self.presenter.report("Already checking for updates.")
+            return
+        self._update_busy = True
+        if announce:
+            self.presenter.report("Checking for updates...")
+
+        def worker() -> None:
+            from . import update
+
+            try:
+                release = update.check()
+            except update.UpdateError as exc:
+                self._later(self._update_check_failed, str(exc), announce)
+                return
+            self._later(self._update_check_done, release, announce)
+
+        threading.Thread(target=worker, name="update-check", daemon=True).start()
+
+    def _update_check_failed(self, reason: str, announce: bool) -> None:
+        self._update_busy = False
+        log.info("Update check failed: %s", reason)
+        if announce:
+            self.presenter.report(reason)
+
+    def _update_check_done(self, release, announce: bool) -> None:
+        self._update_busy = False
+        if not release.newer:
+            log.info("Up to date; latest release is %s.", release.tag)
+            if announce:
+                self.presenter.report(f"Fusion Fire {__version__} is up to date.")
+            return
+        self._offer_update(release)
+
+    def _offer_update(self, release) -> None:
+        """Ask, then do it. Nothing is downloaded until the player says yes."""
+        from .ui.update_dialog import UpdatePrompt
+
+        prompt = UpdatePrompt(self.frame, release, __version__)
+        try:
+            self.presenter.report(prompt.announcement())
+            if prompt.ShowModal() != wx.ID_OK:
+                self.presenter.report("Not updated.")
+                return
+        finally:
+            prompt.Destroy()
+        self._run_update(release)
+
+    def _run_update(self, release) -> None:
+        """Download, unpack and hand over to the swap helper.
+
+        The download runs on a worker thread and the dialog stays modal, so
+        the window keeps answering and Cancel keeps working. Everything the
+        worker touches is under the user's own data directory: the installed
+        copy is not opened at all until the helper takes over, by which time
+        this process is on its way out.
+        """
+        import tempfile
+
+        from . import update
+        from .ui.update_dialog import UpdateProgressDialog
+
+        self._update_busy = True
+        dialog = UpdateProgressDialog(self.frame, self.presenter)
+        outcome: dict = {}
+
+        def worker() -> None:
+            staging = update.staging_dir()
+            scratch = Path(tempfile.mkdtemp(prefix="ff-update-"))
+            archive = scratch / "FusionFire.zip"
+            try:
+                update.download(
+                    archive, release.download_url, progress=dialog.on_progress
+                )
+                self._later(dialog.report, "Unpacking...")
+                update.stage(archive, staging)
+                self._later(dialog.report, "Closing to finish.")
+                helper = update.install(staging)
+                outcome["helper"] = helper
+            except update.UpdateError as exc:
+                outcome["error"] = exc
+            finally:
+                shutil.rmtree(scratch, ignore_errors=True)
+                self._later(self._update_finished, dialog, outcome)
+
+        threading.Thread(target=worker, name="update-install", daemon=True).start()
+        dialog.ShowModal()
+
+    def _update_finished(self, dialog, outcome: dict) -> None:
+        self._update_busy = False
+        try:
+            if dialog.IsModal():
+                dialog.EndModal(wx.ID_OK)
+            dialog.Destroy()
+        except RuntimeError:
+            pass
+
+        from . import update
+
+        error = outcome.get("error")
+        if isinstance(error, update.UpdateCancelled):
+            self.presenter.report(str(error))
+            return
+        if error is not None:
+            self.presenter.report(f"Update failed: {error}")
+            return
+
+        # The helper is running and waiting for this process to go away, so
+        # going away is the last thing left to do. Straight out rather than
+        # through the usual exit music: something is already counting on the
+        # window being gone.
+        #
+        # One more trip through the event loop first. This is running inside
+        # the progress dialog's own modal loop, and tearing the frame down
+        # from in there destroys the window the loop is still standing on.
+        log.info("Update staged; handing over to %s.", outcome.get("helper"))
+        self._later(self._quit_for_update)
+
+    def _quit_for_update(self) -> None:
+        """Close for good, so the helper can replace the files."""
+        self.shutdown()
+        if self.frame is not None:
+            self.frame.Destroy()
+            self.frame = None
 
     def _begin_launch_intro(self) -> None:
         """Play the launch jingle, holding the front menu back until it is
@@ -282,7 +463,6 @@ class AppContext:
         excuse = greetings.maybe_refuse()
         if excuse is not None:
             self.presenter.report(f"{excuse} Try again in a moment.")
-            self.audio.play("error")
             return
 
         self._launch_match(difficulty)
@@ -336,6 +516,9 @@ class AppContext:
             )
             secure = dialog.secure
             hosting = connection == "p2p" and dialog.hosting
+            bind_host = dialog.bind_host
+            shared_address = dialog._shareable_address() if hosting else ""
+            self._online_supplies = (dialog.bullets, dialog.restores)
         finally:
             dialog.Destroy()
         self.settings.save()
@@ -358,15 +541,20 @@ class AppContext:
                 "You will be told which player is the host."
             )
         elif hosting:
+            # Name the address rather than telling the player to go and find
+            # one. They are waiting on somebody else to type it in, and the
+            # thing they need to read out is a fact this process already
+            # knows.
+            where = f"{shared_address} port {port}" if shared_address else f"port {port}"
             if secure:
                 waiting_text = (
-                    f"Waiting for an opponent on port {port}.\n\n"
-                    "Give them your address and the passphrase."
+                    f"Waiting for an opponent on {where}.\n\n"
+                    "Give them that address and the passphrase."
                 )
             else:
                 waiting_text = (
-                    f"Waiting for an opponent on port {port}.\n\n"
-                    "Give them your address. They just dial it, no passphrase."
+                    f"Waiting for an opponent on {where}.\n\n"
+                    "Give them that address. They just dial it, no passphrase."
                 )
         else:
             waiting_text = f"Connecting to {host} on port {port}..."
@@ -378,7 +566,9 @@ class AppContext:
             if connection == "relay":
                 self.net.connect_relay(host, port, passphrase, secure=secure)
             elif hosting:
-                self.net.listen(port=port, passphrase=passphrase, secure=secure)
+                self.net.listen(
+                    port=port, passphrase=passphrase, secure=secure, host=bind_host
+                )
             else:
                 self.net.connect(host, port, passphrase, secure=secure)
         except (OSError, ValueError) as exc:
@@ -408,11 +598,17 @@ class AppContext:
     def _on_net_connected(self) -> None:
         self.audio.stop_music()
         self._close_waiting()
+        bullets, restores = self._online_supplies
         self.net.send(
             "hello",
             version=1,
             name=self.settings.player_name,
             gender=self.settings.player_gender,
+            # Offered by both ends, because the relay has only just told us
+            # which of us is the host. The joiner's numbers are dropped on
+            # arrival; see _begin_online_match.
+            bullets=bullets,
+            restores=restores,
         )
         self.presenter.report("Connected. Waiting for your opponent's details.")
 
@@ -430,7 +626,7 @@ class AppContext:
     def _on_net_message(self, message: dict) -> None:
         kind = message.get("type")
         if kind == "hello":
-            self._begin_online_match(message["name"], message["gender"])
+            self._begin_online_match(message)
         elif kind == "chat":
             # By name, the way every other line about them is. "Opponent
             # says" told the player nothing they did not already know, and
@@ -466,13 +662,34 @@ class AppContext:
         elif self.engine is not None:
             self._apply_remote_move(message)
 
-    def _begin_online_match(self, opponent_name: str, opponent_gender: str) -> None:
+    def _begin_online_match(self, hello: dict) -> None:
         if self.engine is not None:
             return  # a duplicate hello; ignore it
 
+        from .game.constants import DEFAULT_ONLINE_SUPPLY
         from .ui.game_panel import GamePanel
 
-        player = Combatant(name=self.settings.player_name, gender=self.settings.player_gender)
+        opponent_name, opponent_gender = hello["name"], hello["gender"]
+
+        # One side has to decide the supplies, or the two engines start the
+        # match disagreeing about how much ammunition is in it -- and the
+        # host is already the side that decides the turn order. Both players
+        # sent their preference; whichever of us is not the host drops its
+        # own and takes what arrived. An opponent running a build from before
+        # any of this sends neither field, and both ends then land on the
+        # same default rather than on each other's guess.
+        if self.net.is_host:
+            bullets, restores = self._online_supplies
+        else:
+            bullets = hello.get("bullets", DEFAULT_ONLINE_SUPPLY)
+            restores = hello.get("restores", DEFAULT_ONLINE_SUPPLY)
+
+        player = Combatant(
+            name=self.settings.player_name,
+            gender=self.settings.player_gender,
+            bullets=bullets,
+            restores=restores,
+        )
         opponent = Combatant(name=opponent_name, gender=opponent_gender)
         self.engine = Engine(
             player, opponent, get_difficulty(self.settings.difficulty), online=True
@@ -491,7 +708,7 @@ class AppContext:
         """Render the opponent's action, which they have already resolved."""
         from .game.constants import Outcome, Weapon
         from .game.engine import Strike
-        from .game.events import EventLog
+        from .game.events import EventLog, StatsChanged
 
         kind = message["type"]
         log_ = EventLog()
@@ -500,11 +717,14 @@ class AppContext:
             weapon = Weapon(message["weapon"])
             outcome = Outcome(message["outcome"])
             log_.sound({"gun": "computergun", "whip": "computerwhip", "bomb": "computerbomb"}[weapon.value])
+            self._spend_for(weapon)
             strike = Strike(Side.OPPONENT, weapon, outcome, message["damage"])
             self.engine._resolve(strike, log_)
             self.presenter.render(self.engine._end_turn(log_))
         elif kind == "heal":
+            self.engine.opponent.spend_restore()
             self.engine.opponent.heal(message["amount"])
+            log_.add(StatsChanged())
             log_.group("computerrestore")
             log_.say(
                 f"{self.engine.opponent.name} restores {message['amount']} health.",
@@ -518,6 +738,26 @@ class AppContext:
             self.engine.opponent.gun_loaded = True
             log_.sound("computerload")
             self.presenter.render(log_.drain())
+
+    def _spend_for(self, weapon) -> None:
+        """Run down the opponent's stock the way their own engine just did.
+
+        Each player owns their own engine, and the opponent inside it is a
+        mirror kept up to date by their messages. Rendering an attack without
+        also spending what it cost left that mirror reporting a full magazine
+        for a player who had just fired their last round -- so pressing 8 for
+        the opponent's status answered with something that was simply not
+        true. It only started mattering once the opponent stopped having
+        infinite bullets to report.
+        """
+        from .game.constants import Weapon
+
+        other = self.engine.opponent
+        if weapon is Weapon.GUN:
+            other.spend_bullet()
+            other.gun_loaded = False
+        elif weapon is Weapon.BOMB:
+            other.bombs = max(0, other.bombs - 1)
 
     def _on_net_disconnected(self, reason: str) -> None:
         self._close_waiting()

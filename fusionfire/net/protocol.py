@@ -83,6 +83,26 @@ def _bounded_int(low: int, high: int) -> Callable[[Any], int]:
     return check
 
 
+class _Optional:
+    """Wraps a validator for a field a peer is allowed to leave out.
+
+    Absent and ``null`` mean the same thing here -- not given -- so a peer
+    with nothing to say about a field can say so either way, and a build from
+    before the field existed is not a protocol violation. Everything else
+    stays as strict as it was: an optional field that *is* present is checked
+    by exactly the validator it wraps.
+    """
+
+    __slots__ = ("check",)
+
+    def __init__(self, check: Callable[[Any], Any]) -> None:
+        self.check = check
+
+
+def _optional(check: Callable[[Any], Any]) -> _Optional:
+    return _Optional(check)
+
+
 def _name(value: Any) -> str:
     if not isinstance(value, str):
         raise ProtocolError("Expected a string name.")
@@ -98,12 +118,21 @@ _MAX_DAMAGE = max(
 )
 
 #: ``type -> {field: validator}``. Unknown types and unknown fields are
-#: rejected rather than ignored, so a protocol mismatch fails loudly.
-SCHEMA: dict[str, dict[str, Callable[[Any], Any]]] = {
+#: rejected rather than ignored, so a protocol mismatch fails loudly. A
+#: validator wrapped in :func:`_optional` marks a field a peer may omit.
+SCHEMA: dict[str, dict[str, Callable[[Any], Any] | _Optional]] = {
     "hello": {
         "version": _bounded_int(1, 99),
         "name": _name,
         "gender": _enum("male", "female"),
+        # The supplies both players fight with. Optional, because only the
+        # host's numbers count and only the host knows it is the host --
+        # under the relay that is decided by arrival order, after the
+        # dialog has been filled in. Both ends send theirs; the joiner's
+        # are ignored. An opponent too old to send either falls back to
+        # K.DEFAULT_ONLINE_SUPPLY, which is what both would have picked.
+        "bullets": _optional(_bounded_int(0, K.MAX_ONLINE_SUPPLY)),
+        "restores": _optional(_bounded_int(0, K.MAX_ONLINE_SUPPLY)),
     },
     "ready": {},
     "strike": {
@@ -167,11 +196,25 @@ def validate(kind: str, fields: dict[str, Any]) -> dict[str, Any]:
     if unexpected:
         raise ProtocolError(f"Unexpected field(s): {sorted(unexpected)}")
 
-    missing = set(spec) - set(fields)
+    missing = {
+        key for key, check in spec.items()
+        if key not in fields and not isinstance(check, _Optional)
+    }
     if missing:
         raise ProtocolError(f"Missing field(s): {sorted(missing)}")
 
-    return {key: check(fields[key]) for key, check in spec.items()}
+    clean: dict[str, Any] = {}
+    for key, check in spec.items():
+        if isinstance(check, _Optional):
+            # Omitted and null are the same answer, and both drop the field
+            # rather than putting a None into the message for every caller
+            # downstream to test for.
+            value = fields.get(key)
+            if value is not None:
+                clean[key] = check.check(value)
+        else:
+            clean[key] = check(fields[key])
+    return clean
 
 
 def read_length(header: bytes) -> int:

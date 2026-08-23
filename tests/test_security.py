@@ -12,7 +12,7 @@ import json
 import pytest
 
 from fusionfire import paths
-from fusionfire.config import Settings, Stats, sanitise_name
+from fusionfire.config import SETTINGS_VERSION, Settings, Stats, sanitise_name
 from fusionfire.game import cheats
 from fusionfire.game.difficulty import IMPOSSIBLE, INTERMEDIATE
 from fusionfire.game.engine import Combatant
@@ -143,7 +143,7 @@ def test_saving_is_atomic_and_leaves_no_temp_files(tmp_path):
     settings.save(path)
     assert path.is_file()
     assert list(tmp_path.glob(".tmp-*")) == []
-    assert json.loads(path.read_text(encoding="utf-8"))["version"] == 1
+    assert json.loads(path.read_text(encoding="utf-8"))["version"] == SETTINGS_VERSION
 
 
 def test_negative_statistics_are_floored_at_zero(tmp_path):

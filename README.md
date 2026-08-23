@@ -10,6 +10,8 @@ Fusion Fire is a modernised port of Acefire, written by Day Garwood of X-sight I
 
 Fusion Fire is a turn-based fight against a computer that genuinely does not want to be there. You shoot, lash, bomb and heal; it shoots, lashes, bombs and heals back, and gets better at it as you raise the difficulty. Six opponents run from Coward, who hands you unlimited ammunition and never heals itself, up to Impossible, which denies you bombs, disables every cheat and heals the moment it drops below three quarters health. Between rounds it hides items in an octave of thirteen notes and gives you three seconds to grab them by ear. It can also simply refuse to play, and is measurably grumpier at mealtimes and after midnight, because the original was written that way and it is funnier than a menu.
 
+An action you cannot take says so and leaves it at that. Loading a gun that is already loaded, firing on an empty chamber, healing at full health: each answers with a sentence saying what is wrong, and no buzzer in front of it. The refusal was always the sentence.
+
 Everything that happens is announced through your screen reader and sent to your braille display at the same time. The spoken line waits until the attack and the optional cries of the attacked player have finished, so the commentary is never buried under the sound effects. Braille never waits, because it does not compete with audio. Every announcement is also written to a transcript you can arrow back through, and R repeats the last line, because an audio game that says something once and loses it is an audio game you cannot follow.
 
 The optional power weapon takes two minutes to charge and stays usable for three minutes. Press 6 to fire the power weapon. Upon pressing 6, you will hear the weapon preparing to fire, a drum roll and building music playing all the while. As the weapon fires, you'll hear a massive explosion. Did you blow that bastard computer sky high, did the machine activate its cyber defences and make you blow your own balls off, or did you miss the mark completely? You only get one use of the power weapon. Once it has been fired, it cannot be recharged and is gone for the rest of the match. Use it wisely... or die trying!
@@ -161,7 +163,11 @@ A pad that can vibrate does when something lands on you: a short flick for a las
 
 The recommended way to fight over the internet is through a relay server. Both players dial the same relay, and the relay pairs them by the shared passphrase and forwards their traffic byte for byte. The first player to join becomes the host and moves first. Nobody forwards a port and nobody needs to know their public address. A relay server's address can be typed by hand or picked from a list publicized through a relay spy service, which is configured under Settings → Online. The relay and the spy are standalone scripts at the repository root and run on any machine with a plain Python 3.13, no game install needed. A relay operator runs `python srv.py <name> <port>`, where `<name>` is the address players dial, and adds `-P` to publicize the server so players can find it; `-P` announces to the service in the `FUSION_FIRE_SPY_URL` environment variable, or failing that the one set in the game's settings, and on a machine with neither you can pass the address directly: `python srv.py <name> <port> -P https://spy.example.org/servers`. If `<name>` is just a label rather than a dialable address, add `-A <address>` so the spy list points players at the real one (e.g. `python srv.py test 6001 -A fusion.seedy.cc -P ...`). The reference spy service is `python spy.py <port>`, which serves the list over HTTPS when given a certificate: `python spy.py <port> --ssl-cert fullchain.pem --ssl-key privkey.pem`.
 
-Direct peer to peer still works the old way: one player hosts and the other joins, and the host reads their address out to the other player.
+One relay carries as many matches at once as people want to start on it, and the rooms do not touch: a match in progress is not disturbed by anyone else arriving, starting or finishing. A room will not hold three people, so dialling a passphrase or room code that already has two tells you to pick a different one, and the pair already playing never notice.
+
+The relay spy service is filled in for you, so the server list works on a first run. Point it elsewhere under Settings → Online, or clear it to turn the list off. Nothing is contacted until you ask for it.
+
+Direct peer to peer still works the old way: one player hosts and the other joins, and the host reads their address out to the other player. Hosting asks for a port and nothing else, because you are the one being dialled. Your machine's addresses are a list you can arrow through, with a Copy address button. It listens on all of them unless you pick one; picking a single address is there for the machine where that matters, such as a VPN you would rather nobody arrived over. Over the internet you need your public address and a forwarded port, which your router knows and your computer does not.
 
 By default the game is quick play: no passphrase at all. Both players type the same short room code, which the dialog shows pre-filled. It is an identifier, not a secret, so read it out or paste it freely. The first player in the room is the host and moves first. The match runs over a plain TCP connection: anyone who knows the code can join, and the traffic is not encrypted. That is exactly the "open socket, first player in" behaviour of the original, minus the guesswork about which room you are in.
 
@@ -169,7 +175,19 @@ Encrypted mode adds a passphrase, and the passphrase is not a formality. It encr
 
 The relay does not weaken that: the TLS handshake runs between the two players, through the relay, so the relay only ever sees ciphertext. It is trusted for availability, never for privacy. It can drop a match, but it cannot read one and cannot join one without the passphrase. In quick play the room code fills the same slot as the passphrase. It is hashed into the same 16-byte room token the relay pairs by, so the relay does not even know which mode a room is in. Relay spy lists are validated before they are shown, and nothing a spy reports is trusted: a hostile spy can only waste your time, not read your match.
 
+Both players start an online match with the same finite supplies, and the host decides how many. Bullets each and restores each are set at the bottom of the Play online dialog. The relay only decides who hosts once both players have dialled in, so both of you fill the numbers in and the host's are the ones used. Nobody has an endless magazine online: an opponent who can never run out can never be worn down.
+
 Messages are length-prefixed JSON checked against a strict schema. Unknown message types, unknown fields, missing fields and out-of-range values are all rejected, frame sizes are capped before anything is allocated, the listener accepts exactly one opponent and then closes, and a peer that floods the connection is disconnected.
+
+### Updating
+
+Fusion Fire checks GitHub for a newer release when it starts, and says nothing unless there is one. When there is, it names the version, shows that release's notes in a box you can arrow through, and asks. Saying no changes nothing.
+
+Saying yes downloads and unpacks the new build under your own user folder first, so a download that fails or is cancelled leaves the installed game as it was. Only once it has all arrived does the game close, swap itself over and reopen.
+
+That last step is a small helper script, because Windows will not let a running program overwrite its own executable. It is also what makes the update work when the game lives somewhere you cannot write to, such as `C:\Program Files\Fusion Fire`. Windows then asks for permission once, after you have already agreed to update, and the game is handed back to your desktop rather than left running as an administrator.
+
+Turn the startup check off under Settings → Game and the game contacts nobody on its own. Check for updates on the Help menu still works whenever you ask.
 
 ## Accessibility
 

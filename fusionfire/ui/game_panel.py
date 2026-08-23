@@ -222,7 +222,6 @@ class GamePanel(wx.Panel):
     # ------------------------------------------------------------------
     def _require_turn(self) -> bool:
         if self.engine.phase is not Phase.PLAYING:
-            self.audio.play("error")
             return False
         if self._power_weapon_timer is not None:
             # The turn is still nominally the player's during the drumroll,
@@ -231,7 +230,6 @@ class GamePanel(wx.Panel):
             return False
         if self.engine.turn is not Side.PLAYER:
             self.speech.report("Wait your turn.")
-            self.audio.play("error")
             return False
         return True
 
@@ -390,14 +388,12 @@ class GamePanel(wx.Panel):
 
     def _do_cheat_prompt(self) -> None:
         if not self.engine.difficulty.cheats_allowed:
-            self.audio.play("error")
             self.speech.report("Cheats are disabled on this difficulty.")
             return
         # Unlocked for good once earned: either the file is already there
         # from a previous session, or this player's best match cleared the
         # threshold.
         if not cheats.unlocked(self.ctx.stats.best_points):
-            self.audio.play("error")
             self.speech.report(
                 f"Cheats unlock at {K.CHEAT_UNLOCK_POINTS} points in a single match."
             )

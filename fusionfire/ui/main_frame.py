@@ -125,6 +125,7 @@ class MainFrame(wx.Frame):
 
         help_menu = wx.Menu()
         hotkeys = help_menu.Append(wx.ID_HELP, "&Hotkeys\tF1")
+        updates = help_menu.Append(wx.ID_ANY, "Check for &updates")
         help_menu.Append(wx.ID_ABOUT, "&About")
         bar.Append(help_menu, "&Help")
 
@@ -137,6 +138,9 @@ class MainFrame(wx.Frame):
         self.Bind(wx.EVT_MENU, lambda e: self.ctx.menu_choice("settings"), id=wx.ID_PROPERTIES)
         self.Bind(wx.EVT_MENU, lambda e: self.ctx.menu_choice("stats"), id=stats_item.GetId())
         self.Bind(wx.EVT_MENU, lambda e: self.show_help(), id=hotkeys.GetId())
+        self.Bind(
+            wx.EVT_MENU, lambda e: self.ctx.check_for_updates(), id=updates.GetId()
+        )
         self.Bind(wx.EVT_MENU, lambda e: self.show_about(), id=wx.ID_ABOUT)
 
     # ------------------------------------------------------------------

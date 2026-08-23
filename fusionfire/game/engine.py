@@ -55,6 +55,20 @@ ATTACK_SOUNDS: dict[tuple[Side, Weapon], str] = {
 }
 
 
+def _online_supply(value: int) -> int:
+    """Clamp one supply number into the range an online match allows.
+
+    ``UNLIMITED`` has no meaning here -- the point of the online rules is
+    that both sides can run out -- so it falls back to the default rather
+    than to zero, which is what a bare clamp would turn -1 into. Anything
+    else is held inside the same bounds the wire enforces, so a number that
+    arrived from a peer and one typed into the dialog are treated alike.
+    """
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        return K.DEFAULT_ONLINE_SUPPLY
+    return min(K.MAX_ONLINE_SUPPLY, value)
+
+
 @dataclass
 class Combatant:
     """One side of the fight."""
@@ -211,11 +225,42 @@ class Engine:
     # Setup
     # ------------------------------------------------------------------
     def _apply_difficulty(self) -> None:
+        """Hand out the starting supplies.
+
+        Offline the difficulty decides, and the machine shoots forever: that
+        is what makes Coward a pushover and Impossible a wall, and there is
+        nobody on the other side to be treated unfairly by it.
+
+        Online there is no machine to be generous to. An opponent with
+        endless bullets is a person who can never be worn down, which turned
+        every long match into a war of attrition only one side could lose --
+        so both players fight from the same finite stock, decided by the host
+        and carried in its hello. The numbers come in on the player, because
+        that is the side this end owns; the opponent is given the same.
+        """
+        if self.online:
+            self.apply_match_settings(self.player.bullets, self.player.restores)
+            return
         d = self.difficulty
         self.player.bullets = d.player_bullets
         self.player.restores = d.player_restores
         self.opponent.bullets = UNLIMITED
         self.opponent.restores = d.ai_restores
+
+    def apply_match_settings(self, bullets: int, restores: int) -> None:
+        """Adopt the host's supply numbers, on both sides at once.
+
+        Online only. Offline the difficulty owns these numbers, and letting a
+        stray call from the online path rewrite them would quietly turn
+        Coward's endless bullets into ten.
+        """
+        if not self.online:
+            return
+        bullets = _online_supply(bullets)
+        restores = _online_supply(restores)
+        for side in (self.player, self.opponent):
+            side.bullets = bullets
+            side.restores = restores
 
     def start(self, *, use_power_weapon: bool = False, first: Side | None = None) -> list[Event]:
         """Boot the opponent machine. Nothing else happens until it finishes.
@@ -275,16 +320,13 @@ class Engine:
 
         if not actor.gun_loaded:
             log.say("Your gun is not loaded. Press 3 to load it." if side is Side.PLAYER
-                    else f"{actor.name} pulls the trigger on an empty chamber.",
-                    after="error")
-            log.sound("error")
+                    else f"{actor.name} pulls the trigger on an empty chamber.")
             if side is Side.PLAYER:
                 return log.drain()  # a dry click does not cost you the turn
             return self._end_turn(log)
 
         if not actor.unlimited_bullets and actor.bullets <= 0:
-            log.say("Out of bullets.", after="error")
-            log.sound("error")
+            log.say("Out of bullets.")
             if side is Side.PLAYER:
                 return log.drain()
             return self._end_turn(log)
@@ -312,13 +354,9 @@ class Engine:
             return log.drain()
 
         if actor.gun_loaded:
-            log.say("Your gun is already loaded." if side is Side.PLAYER else "",
-                    after="error")
-            log.sound("error")
+            log.say("Your gun is already loaded." if side is Side.PLAYER else "")
         elif not actor.unlimited_bullets and actor.bullets <= 0:
-            log.say("No bullets left to load." if side is Side.PLAYER else "",
-                    after="error")
-            log.sound("error")
+            log.say("No bullets left to load." if side is Side.PLAYER else "")
         else:
             actor.gun_loaded = True
             log.sound("userload" if side is Side.PLAYER else "computerload")
@@ -336,15 +374,13 @@ class Engine:
             return log.drain()
 
         if not actor.unlimited_restores and actor.restores <= 0:
-            log.say("No health restores left.", after="error")
-            log.sound("error")
+            log.say("No health restores left.")
             if side is Side.PLAYER:
                 return log.drain()
             return self._end_turn(log)
 
         if actor.health >= K.MAX_HEALTH:
-            log.say("Already at full health.", after="error")
-            log.sound("error")
+            log.say("Already at full health.")
             if side is Side.PLAYER:
                 return log.drain()
             return self._end_turn(log)
@@ -376,8 +412,7 @@ class Engine:
             return log.drain()
 
         if actor.bombs <= 0:
-            log.say("You have no bombs." if side is Side.PLAYER else "", after="error")
-            log.sound("error")
+            log.say("You have no bombs." if side is Side.PLAYER else "")
             if side is Side.PLAYER:
                 return log.drain()
             return self._end_turn(log)
@@ -404,24 +439,17 @@ class Engine:
 
         weapon = self.power_weapon
         if not weapon.enabled:
-            log.say("You chose not to bring the power weapon to this fight.",
-                    after="error")
-            log.sound("error")
+            log.say("You chose not to bring the power weapon to this fight.")
             return log.drain(), False
         if weapon.state is PowerWeaponState.CHARGING:
             left = int(weapon.seconds_remaining())
-            log.say(f"Still charging. About {left} seconds to go.", after="error")
-            log.sound("error")
+            log.say(f"Still charging. About {left} seconds to go.")
             return log.drain(), False
         if weapon.state is PowerWeaponState.SPENT:
-            log.say("The power weapon has already been fired this session.",
-                    after="error")
-            log.sound("error")
+            log.say("The power weapon has already been fired this session.")
             return log.drain(), False
         if weapon.state is PowerWeaponState.EXPIRED:
-            log.say("The power weapon has powered down. It cannot be used again.",
-                    after="error")
-            log.sound("error")
+            log.say("The power weapon has powered down. It cannot be used again.")
             return log.drain(), False
 
         weapon.state = PowerWeaponState.SPENT
@@ -485,7 +513,6 @@ class Engine:
 
         log = EventLog()
         if key not in COMMENTS:
-            log.sound("error")
             return log.drain()
         log.sound(f"comment_{key}", pan=-0.25 if side is Side.PLAYER else 0.25)
         return log.drain()
@@ -738,12 +765,10 @@ class Engine:
 
     def _can_act(self, side: Side, log: EventLog) -> bool:
         if self.phase is not Phase.PLAYING:
-            log.sound("error")
             return False
         if self.turn is not side:
             if side is Side.PLAYER:
-                log.say("Not your turn.", after="error")
-                log.sound("error")
+                log.say("Not your turn.")
             return False
         return True
 

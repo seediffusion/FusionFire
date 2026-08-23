@@ -34,7 +34,7 @@ from fusionfire.game import engine as engine_module
 from fusionfire.game.constants import Side, Weapon
 from fusionfire.game.difficulty import INTERMEDIATE
 from fusionfire.game.engine import ATTACK_SOUNDS, Combatant, Engine
-from fusionfire.game.events import Say
+from fusionfire.game.events import PlaySound, Say
 
 
 @pytest.fixture
@@ -49,6 +49,13 @@ def engine():
 
 def _lines(events) -> list[Say]:
     return [e for e in events if isinstance(e, Say) and e.text]
+
+
+def _sounds(events) -> list[str]:
+    """The names and groups of every effect an action asked to be played."""
+    return [
+        e.name or e.group for e in events if isinstance(e, PlaySound)
+    ]
 
 
 # ----------------------------------------------------------------------
@@ -90,17 +97,46 @@ def test_the_machine_s_attacks_name_the_machine_s_weapons(engine, monkeypatch):
     assert _lines(engine.crack_whip(Side.OPPONENT))[0].after == "computerwhip"
 
 
-def test_a_refusal_waits_for_its_own_error_buzz(engine):
-    """The buzz says "refused" instantly; the speech says why, a moment later.
+def test_a_refusal_says_why_and_makes_no_noise_about_it(engine):
+    """A blocked action gets the reason, and nothing else.
 
-    ``error.wav`` is only half a second long but it is loud for 95% of that,
-    so a short refusal spoken over it is exactly the sound the buzz covers
-    best.
+    The buzz used to fire alongside it -- the spoken line even waited out
+    ``error.wav`` so it would not be talked over. But every refusal is
+    already a sentence saying exactly what is wrong, and hearing half a
+    second of buzzer before each one, on a keystroke as ordinary as loading
+    an already-loaded gun, was noise on top of an answer. The sentence
+    stayed; the buzz went, and with it the delay that only existed to make
+    room for it.
     """
     engine.player.gun_loaded = False
     lines = _lines(engine.fire_gun(Side.PLAYER))
 
-    assert lines[0].after == "error"
+    assert lines[0].text.startswith("Your gun is not loaded")
+    assert lines[0].after is None, "the refusal is still waiting on a sound"
+    assert not _sounds(engine.fire_gun(Side.PLAYER)), "a refusal played a sound"
+
+
+def test_no_blocked_action_reaches_for_the_buzzer(engine):
+    """Every refusal in the rules, not just the one that was reported."""
+    engine.player.gun_loaded = True
+    engine.player.bullets = 0
+    engine.player.restores = 0
+    engine.player.bombs = 0
+    engine.player.health = 100
+
+    refusals = [
+        engine.load_gun(Side.PLAYER),        # already loaded
+        engine.restore_health(Side.PLAYER),  # none left, and on full health
+        engine.use_bomb(Side.PLAYER),        # none held
+        engine.launch_power_weapon()[0],     # never brought to the fight
+    ]
+    engine.turn = Side.OPPONENT
+    refusals.append(engine.fire_gun(Side.PLAYER))  # not your turn
+
+    for events in refusals:
+        assert not _sounds(events), f"a refusal played {_sounds(events)}"
+        for line in _lines(events):
+            assert line.after is None, f"{line.text!r} is waiting on a sound"
 
 
 def test_the_opponent_s_restore_names_the_group_not_a_member(engine, monkeypatch):

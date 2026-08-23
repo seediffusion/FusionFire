@@ -145,6 +145,91 @@ def test_a_wrong_passphrase_lands_in_a_different_room(relay_port):
         two.close()
 
 
+def test_many_matches_run_on_one_relay_at_the_same_time(relay_port):
+    """Three matches in flight, each on its own key, none aware of the rest.
+
+    The reported worry: a match already in progress meant the next player to
+    dial the server was disconnected. Rooms are keyed and independent, so
+    this drives three of them at once and checks every one still carries its
+    own traffic afterwards.
+    """
+    tokens = [room_token(generate_passphrase()) for _ in range(3)]
+    pairs = []
+    try:
+        for token in tokens:
+            host = socket.create_connection(("127.0.0.1", relay_port), timeout=10)
+            host.sendall(token)
+            assert host.recv(1) == ROLE_HOST
+            joiner = socket.create_connection(("127.0.0.1", relay_port), timeout=10)
+            joiner.sendall(token)
+            assert joiner.recv(1) == ROLE_JOINER
+            pairs.append((host, joiner))
+
+            # Opening this room must not have disturbed any already open.
+            for index, (earlier_host, earlier_joiner) in enumerate(pairs):
+                earlier_host.sendall(f"match-{index}".encode())
+                earlier_joiner.settimeout(5)
+                assert earlier_joiner.recv(64) == f"match-{index}".encode(), (
+                    f"match {index} stopped forwarding when a later one opened"
+                )
+
+        # And a match ending frees only its own room.
+        ending_host, ending_joiner = pairs.pop(1)
+        ending_host.close()
+        ending_joiner.close()
+        time.sleep(0.3)
+        for index, (host, joiner) in enumerate(pairs):
+            host.sendall(b"still here")
+            joiner.settimeout(5)
+            assert joiner.recv(64) == b"still here", (
+                "a surviving match was cut off when another one ended"
+            )
+    finally:
+        for host, joiner in pairs:
+            host.close()
+            joiner.close()
+
+
+def test_a_finished_room_is_replaced_rather_than_handed_out_spent(relay_port):
+    """The next player to dial a key whose match just ended is a new host.
+
+    A room is dead the instant its match ends, but it is only dropped from
+    the table a moment later. Handing that room to the next arrival meant
+    claiming a place in it failed and the player was closed on without even
+    a role byte -- a disconnection with nothing said, purely for having
+    arrived at the wrong instant.
+    """
+    for _ in range(10):
+        _reopen_a_finished_room(relay_port)
+
+
+def _reopen_a_finished_room(relay_port: int) -> None:
+    token = room_token(generate_passphrase())
+
+    host = socket.create_connection(("127.0.0.1", relay_port), timeout=10)
+    host.sendall(token)
+    assert host.recv(1) == ROLE_HOST
+    joiner = socket.create_connection(("127.0.0.1", relay_port), timeout=10)
+    joiner.sendall(token)
+    assert joiner.recv(1) == ROLE_JOINER
+
+    host.close()
+    joiner.close()
+
+    # Straight back in on the same key, with no pause: the point is that the
+    # newcomer is served however far the old room's cleanup happens to have
+    # got, including the window where it is dead but still in the table.
+    again = socket.create_connection(("127.0.0.1", relay_port), timeout=10)
+    try:
+        again.sendall(token)
+        again.settimeout(10)
+        assert again.recv(1) == ROLE_HOST, (
+            "the newcomer was not made the host of a fresh room"
+        )
+    finally:
+        again.close()
+
+
 def test_a_third_player_is_refused_a_full_room(relay_port):
     passphrase = generate_passphrase()
     first, second, third = Recorder(), Recorder(), Recorder()

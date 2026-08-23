@@ -33,6 +33,19 @@ Everything after that byte is forwarded unchanged. The relay has nothing to
 inspect: there is no schema, no framing, no size check, because the bytes are
 the other player's problem, and the game's own frame checks protect them.
 
+Many matches at once
+--------------------
+One relay carries as many matches as its room table holds, and the rooms are
+independent. Two players in room A are unaffected by anyone arriving in room
+B, by a room opening, or by one finishing — nothing in a room's lifetime
+reaches outside it. A room whose match has ended is replaced the moment
+someone dials that key again, rather than being handed out spent.
+
+The one thing a room will not do is hold three people. A third player who
+dials a key that already has two is told so and disconnected; the two who
+are playing never notice. That is the only case in which anybody is turned
+away, and it is the newcomer, never the match in progress.
+
 Usage
 -----
 ::
@@ -124,7 +137,13 @@ class _Room:
         self.alive = True
 
     def register(self, conn: socket.socket) -> bytes:
-        """Claim a socket. Returns the role byte, or ``ROLE_FULL``."""
+        """Claim a socket. Returns the role byte, or ``ROLE_FULL``.
+
+        ``b""`` means the room died between being looked up and being
+        claimed. The caller retries rather than dropping the client: a dead
+        room is one whose match has just ended, and the next player to dial
+        that key is starting a new one, not gatecrashing the old one.
+        """
         with self.lock:
             if not self.alive:
                 return b""
@@ -136,6 +155,19 @@ class _Room:
                 self.host_ready.set()
                 return ROLE_JOINER
             return ROLE_FULL
+
+    def release(self, conn: socket.socket) -> None:
+        """Give back a place claimed by a joiner that never got going.
+
+        A player whose role byte could not even be delivered has not joined
+        anything. Leaving them registered would splice the waiting host to a
+        dead socket, and the host would be dropped for someone else's failed
+        connection -- so the place goes back and the room keeps waiting.
+        """
+        with self.lock:
+            if self.joiner is conn:
+                self.joiner = None
+                self.host_ready.clear()
 
     def abandon(self, conn: socket.socket) -> bool:
         """Drop a host that is still waiting. True if the room is now dead."""
@@ -262,34 +294,45 @@ class RelayServer:
                 log.info("Client %s left before its room token.", address[0])
                 conn.close()
                 return
-            room = self._room_for(token)
+            room, role = self._join_room(token, conn)
             if room is None:
+                # Either the room table is full or every attempt to claim a
+                # room lost a race with a match ending. Neither is the
+                # client's fault, and neither is worth a role byte.
                 conn.close()
                 return
 
-            role = room.register(conn)
-            if role in (b"", ROLE_FULL):
+            if role == ROLE_FULL:
                 try:
-                    if role == ROLE_FULL:
-                        conn.sendall(ROLE_FULL)
+                    conn.sendall(ROLE_FULL)
                 except OSError:
                     pass
                 conn.close()
-                room.abandon(conn)
-                self._forget(room)
                 return
 
             try:
                 conn.sendall(role)
             except OSError:
                 conn.close()
+                room.release(conn)
                 room.abandon(conn)
                 self._forget(room)
                 return
 
             if role == ROLE_HOST:
-                if not self._wait_for_joiner(room, conn):
-                    return  # timed out or the socket died; room cleaned up
+                # One window for the whole wait, however many opponents turn
+                # up and fall over inside it, so a host cannot be kept
+                # parked in the table indefinitely by repeated half-open
+                # connections.
+                deadline = time.monotonic() + self.room_wait
+                while True:
+                    if not self._wait_for_joiner(room, conn, deadline):
+                        return  # timed out or the socket died; room cleaned up
+                    if self._splice(room):
+                        return
+                    # The opponent gave its place back before the two could
+                    # be joined up. The room is still this host's; wait for
+                    # the next one rather than tearing it down.
             # The joiner completes the room. Whichever side runs this first
             # starts the pumps; _splice is guarded so only one pair starts.
             self._splice(room)
@@ -300,6 +343,7 @@ class RelayServer:
             except OSError:
                 pass
             if room is not None:
+                room.release(conn)
                 room.abandon(conn)
                 self._forget(room)
 
@@ -313,14 +357,13 @@ class RelayServer:
             buf += chunk
         return bytes(buf)
 
-    def _wait_for_joiner(self, room: _Room, conn: socket.socket) -> bool:
+    def _wait_for_joiner(self, room: _Room, conn: socket.socket, deadline: float) -> bool:
         """Wait for the second player, watching for the host going away.
 
         Returns False once the room has been cleaned up. The host socket is
         polled for EOF so a host that vanishes does not leave a dead room
         waiting out the whole timeout for its opponent to wander in.
         """
-        deadline = time.monotonic() + self.room_wait
         conn.setblocking(False)
         try:
             while not room.host_ready.wait(1.0):
@@ -347,15 +390,31 @@ class RelayServer:
         except OSError:
             return True
 
-    def _splice(self, room: _Room) -> None:
-        """Start the two pump threads that forward bytes between the players."""
+    def _splice(self, room: _Room) -> bool:
+        """Hand a full room to the pump threads.
+
+        Returns False in exactly one case: the room is alive, not yet
+        spliced, and short of its second player -- which is a waiting host's
+        cue to go back to waiting. Every other outcome means this thread has
+        nothing left to do and says so with True, whether the pumps were
+        started here, started a moment ago by the other player, or never
+        needed because the room has already finished.
+
+        Getting that distinction wrong is not harmless: a host that keeps
+        waiting after its room has been spliced goes on polling a socket the
+        pumps are now reading, and toggles it out of blocking mode under
+        them -- which kills the match it was waiting for.
+
+        The spliced flag is set only once a real pair has been handed over,
+        so a room that loses a joiner can still be spliced to the next one.
+        """
         with room.lock:
             if room.spliced or not room.alive:
-                return
-            room.spliced = True
+                return True
             host, joiner = room.host, room.joiner
-        if host is None or joiner is None:
-            return
+            if host is None or joiner is None:
+                return False
+            room.spliced = True
         # The token read left the 20-second TOKEN_TIMEOUT on these sockets.
         # A room that goes quiet while a player thinks would then be torn
         # down between keepalives; from here the pumps block and the
@@ -370,6 +429,7 @@ class RelayServer:
                 target=self._pump, args=(src, dst, room), name="relay-pump", daemon=True
             )
             thread.start()
+        return True
 
     def _pump(self, src: socket.socket, dst: socket.socket, room: _Room) -> None:
         try:
@@ -387,16 +447,39 @@ class RelayServer:
     # ------------------------------------------------------------------
     # Room table
     # ------------------------------------------------------------------
-    def _room_for(self, token: bytes) -> _Room | None:
+    def _join_room(self, token: bytes, conn: socket.socket) -> tuple[_Room | None, bytes]:
+        """Find or open this token's room and claim a place in it, atomically.
+
+        Doing both under one lock is what keeps concurrent matches out of
+        each other's way. Split apart, two players arriving at the same
+        instant could both be handed the same empty room and both be told
+        they are the host, and a player arriving as another match ended
+        could be handed the room that just died and dropped without so much
+        as a role byte.
+
+        Returns ``(room, role)``. A ``None`` room means the table is full or
+        the room kept dying underneath us; ``ROLE_FULL`` means this token
+        already has its two players and the newcomer must pick another key.
+        """
         with self._rooms_lock:
-            room = self._rooms.get(token)
-            if room is None:
-                if len(self._rooms) >= MAX_ROOMS:
-                    log.warning("Relay room table is full; refusing a new room.")
-                    return None
-                room = _Room(token)
-                self._rooms[token] = room
-            return room
+            # A spent room is one whose match has finished; the next player
+            # to dial that key wants a new room, not the corpse of the old
+            # one. Bounded, because each retry can only lose to a room that
+            # died in the microseconds since it was created.
+            for _ in range(3):
+                room = self._rooms.get(token)
+                if room is None or not room.alive:
+                    if room is not None:
+                        del self._rooms[token]
+                    if len(self._rooms) >= MAX_ROOMS:
+                        log.warning("Relay room table is full; refusing a new room.")
+                        return None, b""
+                    room = _Room(token)
+                    self._rooms[token] = room
+                role = room.register(conn)
+                if role:
+                    return room, role
+            return None, b""
 
     def _forget(self, room: _Room) -> None:
         with self._rooms_lock:
