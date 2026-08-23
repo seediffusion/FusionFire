@@ -25,7 +25,7 @@ You can play a second person over the internet. By default it is quick play via 
 ### Compiled releases
 
 * [Download Fusion Fire installer](https://github.com/seediffusion/FusionFire/releases/latest/download/Fusion_Fire_Setup.exe)
-* [Download Fusion Fire zip file](https://github.com/seediffusion/FusionFire/releases/latest/download/fusion-fire.zip)
+* [Download Fusion Fire zip file](https://github.com/seediffusion/FusionFire/releases/latest/download/FusionFire.zip)
 
 ### Building it yourself
 
@@ -171,7 +171,7 @@ Direct peer to peer still works the old way: one player hosts and the other join
 
 By default the game is quick play: no passphrase at all. Both players type the same short room code, which the dialog shows pre-filled. It is an identifier, not a secret, so read it out or paste it freely. The first player in the room is the host and moves first. The match runs over a plain TCP connection: anyone who knows the code can join, and the traffic is not encrypted. That is exactly the "open socket, first player in" behaviour of the original, minus the guesswork about which room you are in.
 
-Encrypted mode adds a passphrase, and the passphrase is not a formality. It encrypts the match with TLS 1.3 and authenticates both ends, so somebody who does not have it cannot connect at all. The original simply opened a raw TCP socket and played against whoever reached it first, in the clear; anyone on the path could read the match or rewrite it. TLS 1.2 and AES256-GCM were a thing in 2008, guys. The passphrase is stretched with scrypt before it becomes the key, so guessing at it costs real work rather than a hash.
+Encrypted mode adds a passphrase of twelve characters or more, and the passphrase is not a formality. It encrypts the match with TLS 1.3 and authenticates both ends, so somebody who does not have it cannot connect at all. The original simply opened a raw TCP socket and played against whoever reached it first, in the clear; anyone on the path could read the match or rewrite it. TLS 1.2 and AES256-GCM were a thing in 2008, guys. The passphrase is stretched with scrypt before it becomes the key, so guessing at it costs real work rather than a hash.
 
 The relay does not weaken that: the TLS handshake runs between the two players, through the relay, so the relay only ever sees ciphertext. It is trusted for availability, never for privacy. It can drop a match, but it cannot read one and cannot join one without the passphrase. In quick play the room code fills the same slot as the passphrase. It is hashed into the same 16-byte room token the relay pairs by, so the relay does not even know which mode a room is in. Relay spy lists are validated before they are shown, and nothing a spy reports is trusted: a hostile spy can only waste your time, not read your match.
 
