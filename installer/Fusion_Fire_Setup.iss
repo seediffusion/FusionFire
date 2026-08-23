@@ -3,7 +3,7 @@
 ; Non-commercial use only
 
 #define MyAppName "Fusion Fire"
-#define MyAppVersion "2520.1"
+#define MyAppVersion "2520.2"
 #define MyAppPublisher "Seediffusion"
 #define MyAppURL "https://github.com/seediffusion/fusion-fire"
 #define MyAppExeName "FusionFire.exe"
@@ -36,7 +36,7 @@ InfoAfterFile=..\README.md
 ;PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 OutputDir=..\dist
-OutputBaseFilename=Fusion Fire Setup
+OutputBaseFilename=Fusion_Fire_Setup
 SolidCompression=yes
 WizardStyle=classic
 
