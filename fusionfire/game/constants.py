@@ -16,9 +16,18 @@ MAX_HEALTH = 100
 START_HEALTH = 100
 
 # --- Damage ranges ------------------------------------------------------
+#: Absolute health, both of them: this many points off whatever is left.
 GUN_DAMAGE = (5, 15)
 LASH_DAMAGE = (1, 8)  # a 0 roll is a miss and handled separately
-BOMB_DAMAGE = (15, 50)
+#: *Percent* of the target's remaining health, which is what the original
+#: documented and what the readme promises: thirty off someone on sixty, five
+#: off someone on ten. Named for its units, because it sat here as
+#: ``BOMB_DAMAGE`` beside two absolute ranges and was read out by the same
+#: line of code that read those -- which made every bomb a flat fifteen to
+#: fifty and let one take a player from single figures to minus forty.
+BOMB_DAMAGE_PERCENT = (15, 50)
+#: Absolute again. The power weapon is the one swing that is meant to finish
+#: a fight, and a percentage can only ever take a fraction of what is left.
 POWER_WEAPON_DAMAGE = (15, 50)
 
 # --- Base hit probabilities (percent), before difficulty modifiers ------

@@ -579,17 +579,44 @@ class Engine:
     def _roll_attack(self, side: Side, weapon: Weapon) -> Strike:
         d = self.difficulty
         accuracy = d.player_accuracy if side is Side.PLAYER else d.ai_accuracy
+        _actor, target = self._sides(side)
 
         if weapon is Weapon.GUN:
-            base, damage_range = K.GUN_HIT_CHANCE, K.GUN_DAMAGE
+            base = K.GUN_HIT_CHANCE
         elif weapon is Weapon.WHIP:
-            base, damage_range = K.LASH_HIT_CHANCE, K.LASH_DAMAGE
+            base = K.LASH_HIT_CHANCE
         else:
-            base, damage_range = K.BOMB_HIT_CHANCE, K.BOMB_DAMAGE
+            base = K.BOMB_HIT_CHANCE
 
         if not rng.chance(min(97.0, base * accuracy)):
             return Strike(side, weapon, Outcome.MISS)
-        return Strike(side, weapon, Outcome.HIT, rng.between(*damage_range))
+        return Strike(side, weapon, Outcome.HIT, self._damage_for(weapon, target))
+
+    @staticmethod
+    def _damage_for(weapon: Weapon, target: "Combatant") -> int:
+        """How much a landed hit takes off ``target``.
+
+        The gun and the whip are absolute: five to fifteen and one to eight,
+        whatever the target has left. The bomb is not, and never was meant to
+        be. Its roll is a percentage of what is still standing, so it takes
+        thirty off someone on sixty and five off the same someone on ten.
+
+        That makes it a softener rather than a finisher, which is the whole
+        shape of the weapon: it hurts most when the target is healthy and
+        least when they are nearly done. Read as an absolute it was the
+        opposite -- a flat fifteen to fifty, which at single-figure health was
+        an execution, and could put a player on minus forty.
+
+        A landed bomb always takes something. A small percentage of a small
+        number rounds to nothing, and a bomb that lands for zero reads as a
+        broken game rather than as bad luck.
+        """
+        if weapon is Weapon.GUN:
+            return rng.between(*K.GUN_DAMAGE)
+        if weapon is Weapon.WHIP:
+            return rng.between(*K.LASH_DAMAGE)
+        percent = rng.between(*K.BOMB_DAMAGE_PERCENT)
+        return max(1, round(max(0, target.health) * percent / 100))
 
     def _roll_power_weapon(self) -> Strike:
         if rng.chance(K.POWER_WEAPON_HIT_CHANCE):

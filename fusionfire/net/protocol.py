@@ -117,9 +117,14 @@ def _name(value: Any) -> str:
 #: modified code cannot report a bonus worth more than the game can produce.
 _MAX_BONUS_SWING = K.BONUS_NOTE_COUNT * 25
 _MAX_BONUS_COUNT = K.BONUS_NOTE_COUNT * 10
-#: The widest damage any single message may claim, taken from the local rules.
+#: The widest damage any single message may claim, taken from the local
+#: rules. The bomb's share is a percentage, so its worst case is that
+#: percentage of a target still on full health.
 _MAX_DAMAGE = max(
-    K.GUN_DAMAGE[1], K.LASH_DAMAGE[1], K.BOMB_DAMAGE[1], K.POWER_WEAPON_DAMAGE[1]
+    K.GUN_DAMAGE[1],
+    K.LASH_DAMAGE[1],
+    K.BOMB_DAMAGE_PERCENT[1] * K.MAX_HEALTH // 100,
+    K.POWER_WEAPON_DAMAGE[1],
 )
 
 #: ``type -> {field: validator}``. Unknown types and unknown fields are

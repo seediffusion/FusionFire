@@ -464,6 +464,102 @@ def test_opponent_heals_when_hurt_on_impossible(monkeypatch):
 
 
 # ----------------------------------------------------------------------
+# What each weapon takes off
+#
+# The reported bug: a bomb took a player to minus forty-two. The bomb's
+# range is a *percentage* of what the target has left, and it was being read
+# out by the same line that reads the gun's and the whip's absolute ranges --
+# so every bomb was a flat fifteen to fifty, which at single-figure health is
+# an execution. Nothing pinned the damage model at all, which is how it
+# survived.
+# ----------------------------------------------------------------------
+def _bomb_at(health: int, percent: int, monkeypatch) -> int:
+    monkeypatch.setattr("fusionfire.game.engine.rng.between", lambda lo, hi: percent)
+    return Engine._damage_for(Weapon.BOMB, Combatant(name="T", health=health))
+
+
+@pytest.mark.parametrize(
+    "health, percent, expected",
+    [
+        # Straight from the readme, which has been promising this all along:
+        # "at 60 health and it deals 50% damage, they will lose 30 health.
+        # But that same damage dealt at 10 health will only cost them 5."
+        (60, 50, 30),
+        (10, 50, 5),
+        (100, 50, 50),
+        (100, 15, 15),
+        (40, 25, 10),
+    ],
+)
+def test_a_bomb_takes_a_share_of_what_is_left(health, percent, expected, monkeypatch):
+    assert _bomb_at(health, percent, monkeypatch) == expected
+
+
+def test_a_bomb_cannot_blow_anyone_to_minus_forty(engine, monkeypatch):
+    """The report, as it was reported. From single figures the worst a bomb
+    can do is take half, so it can bring someone to nothing and no further."""
+    _always_hit(monkeypatch)
+    engine.player.bombs = 200
+
+    for _ in range(200):
+        engine.turn = Side.PLAYER
+        engine.phase = Phase.PLAYING
+        engine.opponent.health = 8
+        engine.use_bomb(Side.PLAYER)
+        assert engine.opponent.health >= 4, (
+            f"a bomb took someone from 8 health to {engine.opponent.health}"
+        )
+
+
+def test_a_bomb_that_lands_always_takes_something(monkeypatch):
+    """A small share of a small number rounds to nothing, and a bomb that
+    lands for zero reads as a broken game rather than as bad luck."""
+    for health in (1, 2, 3, 5):
+        for percent in (15, 25, 50):
+            assert _bomb_at(health, percent, monkeypatch) >= 1
+
+
+def test_a_bomb_can_still_finish_a_fight(monkeypatch):
+    """Which it must: whoever lands the last strike wins, and a weapon that
+    can only ever take a fraction of what is left could never land it."""
+    assert _bomb_at(1, 15, monkeypatch) == 1
+
+
+def test_a_bomb_stays_inside_the_documented_band(monkeypatch):
+    """Fifteen to fifty percent, and against a target on full health that is
+    still fifteen to fifty -- the top of the range has not moved."""
+    monkeypatch.undo()
+    target = Combatant(name="T", health=K.MAX_HEALTH)
+    rolls = {Engine._damage_for(Weapon.BOMB, target) for _ in range(600)}
+    assert min(rolls) >= K.BOMB_DAMAGE_PERCENT[0]
+    assert max(rolls) <= K.BOMB_DAMAGE_PERCENT[1]
+
+
+@pytest.mark.parametrize(
+    "weapon, span",
+    [(Weapon.GUN, K.GUN_DAMAGE), (Weapon.WHIP, K.LASH_DAMAGE)],
+)
+def test_the_gun_and_the_whip_are_absolute(weapon, span):
+    """They take the same off a target on ninety as one on nine. Only the
+    bomb was ever meant to scale, and the fix must not have caught these."""
+    high = {Engine._damage_for(weapon, Combatant(name="T", health=90)) for _ in range(400)}
+    low = {Engine._damage_for(weapon, Combatant(name="T", health=9)) for _ in range(400)}
+    assert min(high) >= span[0] and max(high) <= span[1]
+    assert min(low) >= span[0] and max(low) <= span[1]
+
+
+def test_the_wire_still_allows_the_biggest_bomb():
+    """The schema bounds damage against the local rules, and the bomb's worst
+    case is now a percentage of a full-health target rather than its raw
+    range. A bomb that could not be reported would deadlock an online match."""
+    from fusionfire.net import protocol
+
+    biggest = K.BOMB_DAMAGE_PERCENT[1] * K.MAX_HEALTH // 100
+    frame = protocol.encode("strike", weapon="bomb", outcome="hit", damage=biggest)
+    assert protocol.decode(frame[4:])["damage"] == biggest
+
+
+# ----------------------------------------------------------------------
 # Bonus hand-off
 # ----------------------------------------------------------------------
 def test_bonus_cannot_spawn_during_its_cooldown(engine):
