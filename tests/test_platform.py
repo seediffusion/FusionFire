@@ -10,6 +10,10 @@ from __future__ import annotations
 
 import pytest
 
+# These check which speech layer a given Windows gets, which means letting
+# open_speech actually choose one.
+pytestmark = pytest.mark.speaks_aloud
+
 from fusionfire import platform_info
 from fusionfire.config import Settings
 from fusionfire.ui_theme_values import THEME_MODES

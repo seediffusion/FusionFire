@@ -21,6 +21,10 @@ from __future__ import annotations
 
 import pytest
 
+# These drive whatever speech backend is really on this machine; that is
+# the entire point of them, so the suite-wide silence is lifted here.
+pytestmark = pytest.mark.speaks_aloud
+
 from fusionfire.config import Settings
 from fusionfire.speech import DEFAULT_PITCH_RANGE, Speech
 

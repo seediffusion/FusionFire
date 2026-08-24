@@ -1027,6 +1027,7 @@ def test_the_taunt_button_says_something_rude_without_asking_which(match):
     assert played[0] in {f"comment_{key}" for key in COMMENTS}
 
 
+@pytest.mark.plays_aloud  # it reads the buses, so they have to be the real ones
 def test_volume_keys_move_the_buses(match):
     ctx, panel = match
     sound_before = ctx.audio.sound_volume

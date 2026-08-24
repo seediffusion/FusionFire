@@ -123,6 +123,10 @@ class AppContext:
         self.theme.attach(self.frame)
         self.frame.Show()
 
+        # First of everything, so the answer is on its way back before the
+        # launch has decided what to play, let alone started playing it.
+        self._check_updates_at_startup()
+
         missing = assets.verify()
         if missing:
             self.presenter.report(
@@ -132,8 +136,6 @@ class AppContext:
 
         if self.settings.gamepad_enabled:
             self.gamepad.start()
-
-        self._check_updates_at_startup()
 
         greeting = greetings.for_today(self.settings.birthday)
         if greeting is not None:
@@ -223,12 +225,37 @@ class AppContext:
             if announce:
                 self.presenter.report(f"Fusion Fire {__version__} is up to date.")
             return
+        if not announce and self.engine is not None:
+            # The startup check came back after the player had already
+            # started fighting. Nobody asked for this now, and a prompt over
+            # a match is worse than one at the next launch.
+            log.info("Update %s available; not interrupting a match.", release.tag)
+            return
         self._offer_update(release)
+
+    def _quiet_the_launch(self) -> None:
+        """Stop whatever the opening is playing, so an update can be heard.
+
+        An update prompt arriving over the launch jingle is two things at
+        once, and the one that has to be answered is the quieter of them --
+        worse still if the answer is yes, because then the jingle plays on
+        over the download. Skipping it also brings the front menu up, which
+        is where the player is standing when the prompt closes.
+
+        A match owns the sound outright and is left alone; the only check
+        that can reach one is a check the player asked for.
+        """
+        if self.engine is not None:
+            return
+        if not self.skip_intro_music():
+            # A birthday piece rather than the jingle, or nothing at all.
+            self.audio.stop_music()
 
     def _offer_update(self, release) -> None:
         """Ask, then do it. Nothing is downloaded until the player says yes."""
         from .ui.update_dialog import UpdatePrompt
 
+        self._quiet_the_launch()
         prompt = UpdatePrompt(self.frame, release, __version__)
         try:
             self.presenter.report(prompt.announcement())
