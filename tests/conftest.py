@@ -1,22 +1,16 @@
 """What the suite is not allowed to do to the machine it runs on.
 
-Both of these were reported by someone running the tests on the desktop they
-were using at the time, rather than in CI, which is where a suite of desktop
-tests is actually run most of the time.
+All of it was reported by someone running the tests on the desktop they were
+using at the time, rather than in CI, which is where a suite of desktop tests
+gets run most of the time and where none of this shows up.
 
 **It must not talk.** Booting an :class:`~fusionfire.app.AppContext` opens
 whatever screen reader is running, and the suite boots roughly two hundred of
-them. Each one then speaks match commentary, menu labels and every refusal
-through it, and each one opens and closes its own connection on the way past.
-That is not a load any screen reader is built for; the report was NVDA
-needing a restart afterwards, which is the game's own accessibility layer
-being turned on its user.
-
-Speech is therefore withheld — using the game's own silent path rather than a
-stand-in, so the class the tests exercise is still the real one. A
-:class:`~fusionfire.speech.Speech` with no backend behind it answers its whole
-surface and says nothing, because that is what the game does on a machine
-with no speech library at all.
+them. Each then speaks match commentary, menu labels and every refusal
+through it. That is not a load any screen reader is built for; the report was
+NVDA needing a restart afterwards, which is the game's own accessibility
+layer turned on its user. The four methods that reach a screen reader are
+stubbed, and nothing else about the speech layer is touched.
 
 **It must not shout either.** The same fixtures open a real audio device and
 play real gunshots, for a minute and a half. The buses are silenced rather
@@ -24,17 +18,27 @@ than the device: every handle is still created, started and tracked, so
 nothing a test can see about the audio engine changes. They simply start at
 zero.
 
+**It must not keep taking the foreground.** Starting the application shows
+its main window, and the suite starts one for almost every application test.
+Each took the foreground, so a run was a couple of hundred focus changes
+through whatever the player was doing -- announced one after another by the
+screen reader that was trying to read something else. The window is still
+built, and still answers MSAA, which is what the accessibility tests actually
+ask of it; it is simply never shown, and never focused into.
+
 **And it must not take the machine over.** Real windows, real sockets, real
-audio, ninety seconds of them. Below normal priority costs a couple of
+audio, a minute and a half of them. Below normal priority costs a couple of
 seconds on an idle machine and gives the desktop back on a busy one.
 
-Both silences are lifted by a marker, for the handful of tests that are about
-the speech layer or the volume controls themselves.
+Each silence is lifted for the tests that are about the thing being silenced:
+a marker for speech and for the volume controls, and
+``FUSION_FIRE_TEST_WINDOWS=1`` to watch a run happen.
 """
 
 from __future__ import annotations
 
 import ctypes
+import os
 import sys
 
 import pytest
@@ -42,6 +46,21 @@ import pytest
 #: Windows process priority. Not "idle", which would starve the suite behind
 #: anything at all; just below whatever the player is doing.
 _BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
+
+#: Every wx class that defines a focus-taking method of its own, and the
+#: original it defines. wx.Panel shadows wx.Window's, so patching the base
+#: class alone leaves the one call that matters -- the panel swap that puts
+#: focus on the front menu -- going straight through.
+_FOCUS_METHODS: dict[tuple[type, str], object] = {}
+try:  # pragma: no cover - import-time plumbing
+    import wx as _wx
+
+    for _cls in (_wx.Window, _wx.Panel):
+        for _name in ("SetFocus", "SetFocusIgnoringChildren"):
+            if _name in _cls.__dict__:
+                _FOCUS_METHODS[(_cls, _name)] = _cls.__dict__[_name]
+except ImportError:  # pragma: no cover - wx is optional for some tests
+    pass
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -115,3 +134,61 @@ def _turn_it_down(request, monkeypatch):
     # a test can observe is unchanged.
     monkeypatch.setattr(AudioEngine, "sound_volume", property(lambda self: 0.0))
     monkeypatch.setattr(AudioEngine, "music_volume", property(lambda self: 0.0))
+
+
+def _stay_hidden(self, show: bool = True) -> bool:
+    """Stand-in for Frame.Show that never puts anything on screen."""
+    return False
+
+
+def _focus_without_barging(original):
+    """Wrap a focus-taking method so it cannot drag a hidden window into view.
+
+    Hiding the frame is not enough on its own. Windows treats focusing a
+    control as a request to activate the window holding it, so the very next
+    thing the game does -- putting focus on the front menu, which it does
+    deliberately and rightly -- hauled the invisible window to the front
+    anyway. It reached the foreground without ever having been shown.
+
+    Focus inside a window nobody can see means nothing, so it is not placed.
+    Anywhere else, including a window a test does show, this is the original.
+    """
+
+    def guarded(self, *args, **kwargs):
+        import wx
+
+        top = wx.GetTopLevelParent(self)
+        if top is not None and not top.IsShown():
+            return None
+        return original(self, *args, **kwargs)
+
+    return guarded
+
+
+@pytest.fixture(autouse=True)
+def _keep_your_windows_to_yourself(monkeypatch):
+    """Build the game's window, and never show it.
+
+    ``AppContext.start`` shows the main frame, and the suite starts one for
+    almost every application test. Each of those takes the foreground, so a
+    run is a couple of hundred focus changes through whatever the player was
+    doing -- which a screen reader announces, one after another, for a minute
+    and a half.
+
+    Hiding it costs nothing. The window is still created, so it still has a
+    real handle and MSAA still answers for every control in it, which is what
+    the accessibility tests actually ask about; visibility is not part of the
+    question. It is the only top-level window the game ever shows, and no
+    dialog in the suite is opened modally, so with this in place a run puts
+    nothing on screen at all.
+
+    Set ``FUSION_FIRE_TEST_WINDOWS=1`` to watch a run instead.
+    """
+    if os.environ.get("FUSION_FIRE_TEST_WINDOWS", "").strip():
+        return
+
+    from fusionfire.ui.main_frame import MainFrame
+
+    monkeypatch.setattr(MainFrame, "Show", _stay_hidden, raising=False)
+    for (owner, name), original in _FOCUS_METHODS.items():
+        monkeypatch.setattr(owner, name, _focus_without_barging(original))

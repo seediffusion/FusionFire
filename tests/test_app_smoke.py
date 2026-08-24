@@ -1520,7 +1520,11 @@ def test_the_menu_activates_on_enter_through_char_hook(app_ctx, monkeypatch):
     app_ctx.skip_intro_music()
 
     menu.list.SetSelection(2)
-    menu.list.SetFocus()
+    # _on_key only acts when the list has keyboard focus, and the suite never
+    # shows its window -- focusing into one that is not on screen is what
+    # used to haul it in front of whatever the player was doing. Its sibling
+    # above says the same thing about headless focus.
+    monkeypatch.setattr(wx.Window, "FindFocus", lambda: menu.list)
     event = wx.KeyEvent(wx.wxEVT_CHAR_HOOK)
     event.SetKeyCode(wx.WXK_RETURN)
     menu.GetEventHandler().ProcessEvent(event)
