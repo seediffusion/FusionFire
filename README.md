@@ -4,9 +4,9 @@ Beat the hell out of your computer. Fair warning: it beats back.
 
 Everybody has wanted to shoot their computer at some point in their lives. Now you can, and you won't need to blow money you don't have and most likely never will have on new hardware afterwards.
 
-Fusion Fire is a fully accessible audio combat game for Windows that puts blind and visually impaired players first. You and a terrible computer that was probably built by a teenager who thinks their CPU is an actual potato take turns trying to destroy each other with a gun, a whip, a bomb, and a power weapon that occasionally blows up in your face; quite literally. It is played entirely by ear and driven from the number row, with on-screen elements that are clearly labelled for screen readers such as [NVDA](https://nvaccess.org/about-nvda/) and [JAWS](https://www.freedomscientific.com/products/software/jaws/). Speech and braille both carry the commentary, dark mode follows your system theme, and any controller Windows recognises can play it. There is nothing to install: unzip it, run it, and you are in a fight.
+Fusion Fire is an audio combat game for Windows where you and a terrible computer that was probably built by a teenager's mum, who probably thinks the CPU is an actual potato, take turns trying to destroy each other with a gun, a whip, a bomb, and a power weapon that occasionally blows up in your face; quite literally. 
 
-Fusion Fire is a modernised port of Acefire, written by Day Garwood of X-sight Interactive and released in 2008. None of the original VB 6 Acefire code was used in this rewrite. Fusion Fire was built entirely from scratch with brand new code. The original wave files of music and sound effects were used to preserve the 2008 vibe at its absolute highest quality. No infringement of rights of any kind is intended and no financial gain shall be obtained from this rewrite. It is strictly for preservation and modernization purposes. The original concept, code, sounds and other assets are properties of their respective owners.
+Fusion Fire is a modernised port of Acefire, written by Day Garwood of X-sight Interactive and released in 2008. The original game was not reverse engineered or disassembled, so none of the original VB 6 Acefire code was used in this rewrite. Fusion Fire was built entirely from scratch with brand new code. The original wave files of music and sound effects were used to preserve the 2008 vibe at its absolute highest quality. No infringement of rights of any kind is intended and no financial gain shall be obtained from this rewrite. It is strictly for preservation and modernization purposes. The original concept, code, sounds and other assets are properties of their respective owners.
 
 ## Fusion Fire features
 
@@ -195,61 +195,45 @@ One of you picks the server and the room code and sends both to the other. Whoev
 
 1. Choose Play online from the main menu.
 2. Leave Connection type on Relay server and Connection security on Quick play.
-3. The Room code box is filled in for you. Keep it, or clear it and type something the two of you will actually remember.
-4. Set Bullets each and Restores each. If you get in first, these are the numbers you both play with.
-5. Press Copy code and send the code, along with the address of the relay server you are about to use, to the other player.
-6. Type that server's address into the Relay server box and press OK, or press Get a list of publicized servers and choose one from the list.
-7. Fusion Fire tells you it is waiting, and how long it will wait.
-
-Leave the server until last. Choosing one from the publicized list connects you there and then, so anything you have not filled in yet goes in as it stands.
+3. Tab to the room code field and enter a code that the two of you will remember.
+4. Press Alt + L to get a list of public relay servers, or enter the hostname/IP and port of a private server in the respective fields.
+5. Enter how many bullets and health restores each player will get in the respective fields.
+6. Hit OK to connect to the relay.
 
 #### If you are joining the fight
 
 1. Choose Play online from the main menu.
 2. Leave Connection type on Relay server and Connection security on Quick play.
-3. Clear the Room code box and type the code they gave you. It has to match exactly.
+3. Type the room code given to you by the host in the room code fox.
 4. Ignore Match supplies. Whoever gets in first is the host, and their numbers are the ones both of you play with.
-5. Type the relay server address they gave you and press OK, or pick that same server from the publicized list.
-
-The fight starts the moment you are both in. If Fusion Fire tells you two players are already using that room code, somebody else is mid-fight on it. Agree a different one and go again.
-
+5. Connect to the server via the publicized servers list (Alt + L) or type the details of a private server in the relay server and port fields.
 
 ### Encrypted
 
-Same as quick play, but a shared passphrase takes the place of the room code and the whole fight is encrypted. Set Connection security to Encrypted and the dialog swaps the Room code box for a Shared passphrase box.
+Same as quick play, but a shared passphrase takes the place of the room code and the whole fight is TLS 1.3 encrypted. Set Connection security to Encrypted and the dialog swaps the Room code box for a Shared passphrase box.
 
 #### If you are starting the fight
 
 1. Follow the quick play steps, but set Connection security to Encrypted.
 2. Press New passphrase to have one thought up for you, or type your own of twelve characters or more.
-3. Press Copy passphrase and get it to the other player over something you already trust. A phone call, or whatever you would send a bank card photo over.
-4. Press OK and wait for them.
+3. Press Copy passphrase so it can be sent to the other player.
+4. Press OK and wait for your opponent to join.
 
 #### If you are joining the fight
 
 1. Follow the quick play steps, but set Connection security to Encrypted.
-2. Type the passphrase they gave you into the Shared passphrase box, exactly as they gave it to you.
+2. Type or paste the passphrase the host gave you into the Shared passphrase box, exactly as they gave it to you.
 3. Press OK.
 
 Get one character of it wrong and you will not join a different room, you simply will not connect, and Fusion Fire will tell you to check that you both typed the same thing.
 
-The passphrase is not a formality. It encrypts the match with TLS 1.3 and authenticates both ends, so somebody who does not have it cannot connect at all. It is stretched with scrypt first, so guessing at it costs real work rather than a hash.
+Your passphrase is scrambled with a key derivation function called scrypt. In order to try and unscramble a scrypt-hashed password, an attacker won't just need a computer that is fast, they'll also need a computer that has a lot of memory. They'd need a stupidly large amount of graphics cards to even think about doing this efficiently which, especially these days is stupidly expensive.
 
-The original simply opened a raw TCP socket and played against whoever reached it first, in the clear; anyone on the path could read the match or rewrite it. TLS 1.2 and AES256-GCM were a thing in 2008, guys.
-
-### Relay servers
-
-Both players dial the same relay, and it pairs you by your room code or passphrase and forwards your traffic byte for byte. Nobody forwards a port and nobody needs to know their public address.
-
-The relay never sees anything but ciphertext in encrypted mode, because the TLS handshake runs between the two players, through it. It is trusted for availability, never for privacy: it can drop a match, but it cannot read one and cannot join one without the passphrase.
-
-Press the Get a list of publicized servers button to pick one, or type an address by hand. The list comes from a relay spy service, which is filled in for you already and only contacted when you ask for the list. Point it elsewhere or clear it under Settings → Online.
-
-One relay carries as many matches at once as people want to start on it, and the rooms do not touch. A room will not hold three people, so dialling a code that already has two tells you to pick a different one; the pair already playing never notice.
+Encrypted mode uses end-to-end encryption, so everything that passes through the relay is scrambled and only the host and their opponent can unscramble it.
 
 ### Direct peer to peer
 
-No relay in the middle. One of you listens and the other dials them, which is how the original did it. On a LAN this just works; over the internet the host needs a forwarded port.
+No relay in the middle. The host starts a game server on their own machine and the other player connects to it, which is how Acefire did it. On a LAN this just works; over the internet the host either needs a forwarded port or a mesh networking solution like TailScale.
 
 Here the roles are a choice rather than a race: whoever picks Host the game is the host and moves first.
 
@@ -270,10 +254,6 @@ Here the roles are a choice rather than a race: whoever picks Host the game is t
 3. Type their address into Opponent's address, and their port into Port.
 4. Press OK.
 
-Picking one address instead of all of them is only worth doing on a machine where it matters, such as one with a VPN you would rather nobody arrived over.
-
-Over the internet you need your public address and a forwarded port. That is not in the list, because your router knows it and your computer does not.
-
 ### Match supplies
 
 Nobody has an endless magazine online. An opponent who can never run out can never be worn down, which is fine for a machine and miserable for a person.
@@ -286,32 +266,23 @@ The bonus round happens online too. Both players get one at the same moment, eac
 
 The relay and the spy service are standalone scripts at the repository root. They import no game code and need no game dependencies, so they run on any machine with a plain Python 3.13.
 
-1. Run the relay, where `<name>` is the address players dial.
+1. Run the relay, where `<name>` is the name shown in the publicized servers list.
+    ```
+    python srv.py <name> <port>
 ```
-python srv.py <name> <port>
-```
-2. Add `-P` to publicize it so players can find it in the server list.
-```
-python srv.py <name> <port> -P
-```
-
-`-P` announces to whatever is in the `FUSION_FIRE_SPY_URL` environment variable, or failing that the address set in the game's own settings. On a machine with neither, pass it directly:
-
-```
-python srv.py <name> <port> -P https://spy.example.org/servers
+2. Add `-P` to publicize it to a spy so players can find it in the server list.
+    ```
+    python srv.py <name> <port> -A <relay_server_hostname> -P
 ```
 
-If `<name>` is a label rather than a dialable address, add `-A` so the list points players at the real one:
-
-```
-python srv.py test 6001 -A fusion.seedy.cc -P https://spy.example.org/servers
-```
-
+The -A argument tells the spy what hostname or IP address the relay server is using so the client knows the right server to dial.
 The reference spy service is `spy.py`, which serves the list over HTTPS when you give it a certificate:
 
 ```
 python spy.py <port> --ssl-cert fullchain.pem --ssl-key privkey.pem
 ```
+
+The spy service gets its name from QSpy, which allowed Quake players to find and connect to Quake servers. QSpy and the Planet Quake website ultimately evolved into Game Spy, which allowed players to easily find multiplayer servers for many video games until its shutdown in 2014.
 
 ## Settings
 
@@ -325,7 +296,7 @@ With no screen reader running on Windows 10 or 11, the game falls back to a plat
 
 ### Dark mode
 
-On Windows 10 and 11 Fusion Fire follows your Windows light and dark setting, and follows it live. You can also pin it to light or dark regardless. On Windows 8.1 and 7 there is no system setting to follow, so those two choices are all that is offered.
+On Windows 10 and 11, Fusion Fire follows your Windows light and dark setting, and follows it live. You can also pin it to light or dark regardless. On Windows 8.1 and 7 there is no system setting to follow, so those two choices are all that is offered.
 
 Changing the setting mid-session repaints the game immediately, but the title bar and scroll bars are drawn by Windows itself and keep the appearance they were created with until the next launch. Fusion Fire tells you when that happens, instead of leaving you wondering why half the window changed.
 
@@ -333,45 +304,11 @@ Changing the setting mid-session repaints the game immediately, but the title ba
 
 Open the `sounds` folder beside the game and replace any file in it. That is the whole procedure. `sounds/sfx/usergun.wav` is your gun, `sounds/music/level1.wav` is the healthy-health score.
 
-`.wav`, `.ogg`, `.mp3` and `.flac` all work regardless of what the original file was. Nothing you drop in there can reach outside that folder, so a crafted filename cannot make the game open something else on your disk.
+The game supports sound files in either Wave, MP3, Ogg Vorbis or FLAC format.
 
 ### Updating
 
-Fusion Fire checks GitHub for a newer release when it starts, and says nothing unless there is one. When there is, it names the version, shows the release notes in a box you can arrow through, and asks. Saying no changes nothing.
-
-Say yes and the new build is downloaded and unpacked under your own user folder first, so a download that fails or is cancelled leaves your game exactly as it was. Only once it has all arrived does Fusion Fire close, swap itself over and reopen.
-
-That last step is a small helper script, because Windows will not let a running program overwrite its own executable.
-
-It also means the update works when the game lives somewhere you cannot write to, such as `C:\Program Files\Fusion Fire`. Windows asks for permission once, after you have already agreed to update, then hands the game back to your desktop rather than leaving it running as an administrator.
-
-Check for updates is on the main menu and on the Help menu whenever you want it. Turn the startup check off under Settings → Game and Fusion Fire contacts nobody on its own.
-
-## Accessibility
-
-Speech and braille go through Prism, which talks to whichever screen reader is actually running and falls back to the platform voice when none is. The original required a screen reader and gave you nothing without one; this is playable either way.
-
-Combat status lines are short and numeric, which is exactly what a braille display handles better than speech, so status output goes to both by default. Braille is never delayed for the sake of the audio.
-
-The spoken line waits until the attack and the screams have finished, so the commentary is never buried under the sound effects. Press `R` at any time to hear the last line again, or arrow back through the transcript.
-
-## Testing
-
-```
-uv run pytest
-```
-
-682 tests, covering:
-
-* the rules, the bonus round, the cheat parser and the name generator, in pure Python;
-* real sockets and real TLS handshakes, proving a wrong passphrase cannot connect;
-* a whole match played through the same calls the keyboard and gamepad use;
-* a stand-in controller, checking the button under your thumb is the one the game thinks it is;
-* every dialog, checking its labels line up.
-
-The suite stays out of your way while it runs. Two hundred applications booting would put two hundred windows in front of whatever you were doing and speak every line of every match through your screen reader, which is enough to need NVDA restarted afterwards.
-
-So speech is dropped, audio goes to nothing, the window is built but never shown, and the whole thing runs below whatever you are actually doing. Set `FUSION_FIRE_TEST_WINDOWS=1` if you would rather watch.
+Either at startup or via the check for updates option in the main menu, Fusion Fire will check for game updates and offer to download and apply the update for you if one is available.
 
 ## Credits
 
