@@ -55,9 +55,14 @@ WARN_AT = (0.30, 0.15)
 
 # --- Bonus round --------------------------------------------------------
 BONUS_NOTE_COUNT = 13
-#: How long a bonus round lasts, unless the player says otherwise. Three
-#: seconds is the original's, and is deliberately not enough time to think.
-DEFAULT_BONUS_SECONDS = 3
+#: How long a bonus round lasts, unless the player says otherwise. The
+#: original gave you three, which is not enough time to hear thirteen notes
+#: through once, let alone decide anything about them.
+DEFAULT_BONUS_SECONDS = 10
+#: What the original gave you, and what this used to default to. Kept so a
+#: settings file still holding it can be told apart from one where somebody
+#: chose it on purpose.
+ORIGINAL_BONUS_SECONDS = 3
 #: The longest a bonus round may be set to. Long enough to hear all thirteen
 #: notes twice over, which turns the round from a scramble into a choice --
 #: some players want that and some want the scramble, so it is a setting.

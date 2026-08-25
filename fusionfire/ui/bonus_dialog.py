@@ -5,13 +5,12 @@ audibly the whole time and a horn ends it, which is the entire interface —
 the window exists to own the keyboard focus, not to be looked at.
 
 How long it runs is passed in: the player's own setting offline, the host's
-online. The default is the original's three seconds, which is not long
-enough to think and is not meant to be.
+online. Ten seconds by default, and anything from one to thirty.
 
 The round is deliberately generous about what counts as an input: the arrow
 keys, the gamepad D-pad and the left stick all move; space and the pad's A
-button both mark. At three seconds there is no time to go hunting for the
-right control, and at thirty there is no reason to make anyone.
+button both mark. Set short there is no time to go hunting for the right
+control, and set long there is no reason to make anyone.
 """
 
 from __future__ import annotations
@@ -131,8 +130,8 @@ class BonusDialog(wx.Dialog):
             self._move(1)
         elif action in (Action.MARK_NOTE, Action.TAUNT, Action.FIRE_GUN):
             # Space, the pad's A button and the trigger that fires the gun.
-            # A is the taunt during a match and marks a note here; at three
-            # seconds there is no time to go looking for one right button.
+            # A is the taunt during a match and marks a note here; a round
+            # set short leaves no time to go looking for one right button.
             self._toggle()
 
     def _move(self, delta: int) -> None:

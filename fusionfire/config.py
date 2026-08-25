@@ -27,7 +27,7 @@ from . import paths
 
 log = logging.getLogger(__name__)
 
-SETTINGS_VERSION = 2
+SETTINGS_VERSION = 3
 
 #: The relay spy service the game asks for a list of relay servers, unless
 #: the player points it somewhere else. Having one out of the box is the
@@ -104,7 +104,7 @@ class Settings:
     #: How long a bonus round lasts, in seconds. Offline this is simply your
     #: setting; online the host's is used for both players, because a round
     #: the two of them played for different lengths is two different rounds.
-    bonus_seconds: int = 3
+    bonus_seconds: int = 10
     confirm_exit: bool = True
     #: Play the launch jingle instead of the spoken ready message. The first
     #: Enter on the front menu skips it.
@@ -284,6 +284,19 @@ class Settings:
         value happens to look unset, so a player who deliberately turned
         something off does not have it turned back on at every launch.
         """
+        if from_version < 3:
+            from .game.constants import (
+                DEFAULT_BONUS_SECONDS,
+                ORIGINAL_BONUS_SECONDS,
+            )
+
+            # Three seconds was the default rather than anybody's choice, and
+            # it was too short to be one. A file still holding it is a file
+            # nobody ever opened that page of; a file holding anything else
+            # is somebody's decision and is left alone.
+            if self.bonus_seconds == ORIGINAL_BONUS_SECONDS:
+                self.bonus_seconds = DEFAULT_BONUS_SECONDS
+
         if from_version < 2 and not self.relay_spy_url:
             # Version 1 had no default spy service, so every file from it
             # carries an empty address that predates there being one to

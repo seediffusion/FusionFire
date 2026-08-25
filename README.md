@@ -137,7 +137,7 @@ Every so often the machine hides items in an octave of thirteen notes. Some help
 2. Press `Space` to mark a note. Mark as many as you dare.
 3. When the horn sounds, everything you marked is applied and read out.
 
-The round is three seconds long by default, which is not enough time to think and is not meant to be. If that is not your idea of fair, Settings → Game will stretch it to as much as thirty seconds.
+The round is ten seconds long by default. The original gave you three, which is not long enough to hear all thirteen notes through once, never mind decide anything about them. Settings → Game will take it anywhere from one second to thirty, so have it either way.
 
 ### Cheat codes
 

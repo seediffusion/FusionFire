@@ -353,8 +353,8 @@ class SettingsDialog(wx.Dialog):
         bonus_hint = wx.StaticText(
             page,
             label=(
-                "Three seconds is the original's. Online the host's setting "
-                "is used for both players."
+                "The original gave you three, which is not long enough to "
+                "hear all thirteen. Online the host's setting is used."
             ),
         )
         bonus_hint.Wrap(440)

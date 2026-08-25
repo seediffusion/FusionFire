@@ -1726,6 +1726,50 @@ def test_the_bonus_round_says_how_long_it_is(app_ctx, match):
         dialog.Destroy()
 
 
+def test_a_bonus_round_is_ten_seconds_unless_you_say_otherwise(app_ctx, match):
+    """Three was the original's, and is not long enough to hear thirteen
+    notes through once."""
+    from fusionfire.config import Settings
+    from fusionfire.game.constants import DEFAULT_BONUS_SECONDS
+    from fusionfire.ui.bonus_dialog import BonusDialog
+
+    assert DEFAULT_BONUS_SECONDS == 10
+    assert Settings().bonus_seconds == 10
+
+    ctx, panel = match
+    dialog = BonusDialog(panel, ctx.engine.difficulty, ctx.audio, ctx.speech)
+    try:
+        assert dialog.seconds == 10
+    finally:
+        dialog.Destroy()
+
+
+def test_a_settings_file_still_on_three_is_moved_up(tmp_path):
+    """Three was the default rather than anybody's choice. A file still
+    holding it is one nobody ever opened that page of; anything else is a
+    decision somebody made and is left alone."""
+    import json
+
+    from fusionfire.config import Settings
+
+    path = tmp_path / "settings.json"
+
+    path.write_text(json.dumps({"version": 2, "bonus_seconds": 3}), encoding="utf-8")
+    assert Settings.load(path).bonus_seconds == 10
+
+    for chosen in (1, 5, 20, 30):
+        path.write_text(
+            json.dumps({"version": 2, "bonus_seconds": chosen}), encoding="utf-8"
+        )
+        assert Settings.load(path).bonus_seconds == chosen, (
+            f"{chosen} seconds was somebody's choice and was overwritten"
+        )
+
+    # And once the file has been through the change, three is a choice.
+    path.write_text(json.dumps({"version": 3, "bonus_seconds": 3}), encoding="utf-8")
+    assert Settings.load(path).bonus_seconds == 3
+
+
 def test_the_settings_dialog_carries_the_bonus_length(app_ctx):
     from fusionfire.ui.settings_dialog import SettingsDialog
 

@@ -9,9 +9,10 @@ seven is always a bomb" is not a strategy. What you mark is a bet on how many
 of thirteen unknowns you fancy.
 
 How long the round lasts is the player's to choose, up to
-:data:`~fusionfire.game.constants.MAX_BONUS_SECONDS`. Three seconds is the
-original's and is not enough time to think, which is the joke; half a minute
-turns the same round into a deliberate choice. Both are worth having.
+:data:`~fusionfire.game.constants.MAX_BONUS_SECONDS`. Ten is the default: the
+original's three is not long enough to hear thirteen notes through once, and
+half a minute turns the same round into a deliberate choice. Both ends of
+that are worth having, so both are reachable.
 
 Online, both players get a round at the same moment and each picks from
 their own thirteen. The host says how long it runs, and each side reports
