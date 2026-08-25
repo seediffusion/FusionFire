@@ -199,6 +199,7 @@ class Engine:
         difficulty: Difficulty | str = "intermediate",
         *,
         online: bool = False,
+        spectating: bool = False,
     ) -> None:
         self.player = player
         self.opponent = opponent
@@ -206,6 +207,14 @@ class Engine:
             difficulty if isinstance(difficulty, Difficulty) else get_difficulty(difficulty)
         )
         self.online = online
+        #: Watching two other people rather than fighting one of them.
+        #:
+        #: The rules do not change; the commentary does. Every line this
+        #: engine speaks is written for whoever it belongs to, and a watcher
+        #: is neither of them -- "you shoot and hit for 12" is a sentence
+        #: about somebody who is not listening. Both fighters get named
+        #: instead, and the verbs agree with the name rather than with "you".
+        self.spectating = spectating
         self.phase = Phase.SETUP
         self.turn: Side = Side.PLAYER
         self.power_weapon = PowerWeapon()
@@ -301,10 +310,11 @@ class Engine:
             log.say("Power weapon powering up. It will take about two minutes to charge.")
             log.add(StartAmbience("power_weapon", "userweaponrun", volume=0.5))
 
+        first, _ = self._sides(self.turn)
         log.say(
             "You go first."
-            if self.turn is Side.PLAYER
-            else f"{self.opponent.name} goes first."
+            if self._first_person(self.turn)
+            else f"{first.name} goes first."
         )
         log.add(*self._music_for_health(), TurnChanged(self.turn), StatsChanged())
         return log.drain()
@@ -710,22 +720,30 @@ class Engine:
             StatsChanged(),
         )
 
+    def _first_person(self, side: Side) -> bool:
+        """Whether this side is the one being spoken to.
+
+        Nobody is, at the ringside: both fighters are somebody else, so both
+        get their name and a verb that agrees with it.
+        """
+        return side is Side.PLAYER and not self.spectating
+
     def _verb(self, strike: Strike) -> str:
         """The subject and its attack verb: "You shoot", "Blue Screen lashes"."""
         attacker, _ = self._sides(strike.attacker)
-        who = "You" if strike.attacker is Side.PLAYER else attacker.name
+        mine = self._first_person(strike.attacker)
+        who = "You" if mine else attacker.name
         verbs = {
-            Weapon.GUN: "shoot" if strike.attacker is Side.PLAYER else "shoots",
-            Weapon.WHIP: "lash" if strike.attacker is Side.PLAYER else "lashes",
-            Weapon.BOMB: "throw a bomb" if strike.attacker is Side.PLAYER else "throws a bomb",
+            Weapon.GUN: "shoot" if mine else "shoots",
+            Weapon.WHIP: "lash" if mine else "lashes",
+            Weapon.BOMB: "throw a bomb" if mine else "throws a bomb",
             Weapon.POWER_WEAPON: "fire the power weapon"
-            if strike.attacker is Side.PLAYER
+            if mine
             else "fires the power weapon",
         }
         return f"{who} {verbs[strike.weapon]}"
 
-    @staticmethod
-    def _agrees(side: Side, singular: str, third_person: str) -> str:
+    def _agrees(self, side: Side, singular: str, third_person: str) -> str:
         """Pick the form that agrees with the subject.
 
         The two halves of these lines have to match: "You shoot and missed"
@@ -733,12 +751,12 @@ class Engine:
         lashes and hit" dropped the agreement the first verb had already
         established. Both halves are present tense now, and both agree.
         """
-        return singular if side is Side.PLAYER else third_person
+        return singular if self._first_person(side) else third_person
 
     def _warn_low(self, victim: Combatant, side: Side) -> list[Event]:
         """Low-health cues, once per threshold crossed."""
         out: list[Event] = []
-        if side is not Side.OPPONENT:
+        if side is not Side.OPPONENT or self.spectating:
             return out
         from .events import PlaySound
 
@@ -822,7 +840,18 @@ class Engine:
         log.add(StopAmbience("power_weapon", fade=0.6), StopAmbience("machine", fade=1.2))
         suffix = "o" if self.online else ""
 
-        if self.winner is Side.PLAYER:
+        if self.spectating:
+            winner, loser = self._sides(self.winner)
+            log.sound("computerdie")
+            log.add(PlayMusic(f"win{suffix}", looping=False))
+            log.say(
+                f"{loser.name} is down on {loser.health}. {winner.name} wins! "
+                f"Final score: {self.player.name} {self.player.points}, "
+                f"{self.opponent.name} {self.opponent.points}.",
+                after="computerdie",
+            )
+            reason = f"{loser.name} reached {loser.health} health."
+        elif self.winner is Side.PLAYER:
             log.sound("computerdie")
             log.add(PlayMusic(f"win{suffix}", looping=False))
             log.say(

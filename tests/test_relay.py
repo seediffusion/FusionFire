@@ -10,18 +10,39 @@ just forwarded.
 from __future__ import annotations
 
 import socket
+import struct
 import threading
 import time
 
 import pytest
 
-from fusionfire.net.relay import ROLE_FULL, ROLE_HOST, ROLE_JOINER
+from fusionfire.net.relay import (
+    MAX_SEATS,
+    OPTION_RINGSIDE,
+    ROLE_FULL,
+    ROLE_HOST,
+    ROLE_JOINER,
+    ROLE_SPECTATOR,
+    SEAT_HEADER,
+)
 from fusionfire.net.session import (
     RelaySession,
     generate_passphrase,
     room_token,
 )
 from srv import RelayServer
+
+
+def _open(port: int, token: bytes, options: int = 0) -> socket.socket:
+    """Dial the relay the way a client does: the token, then the options byte.
+
+    The opening gained that byte when rooms gained a ringside, and the tests
+    that speak to the relay directly have to speak the same opening as the
+    game does.
+    """
+    sock = socket.create_connection(("127.0.0.1", port), timeout=10)
+    sock.sendall(token + bytes([options]))
+    return sock
 
 
 def _free_port() -> int:
@@ -169,11 +190,9 @@ def test_many_matches_run_on_one_relay_at_the_same_time(relay_port):
     pairs = []
     try:
         for token in tokens:
-            host = socket.create_connection(("127.0.0.1", relay_port), timeout=10)
-            host.sendall(token)
+            host = _open(relay_port, token)
             assert host.recv(1) == ROLE_HOST
-            joiner = socket.create_connection(("127.0.0.1", relay_port), timeout=10)
-            joiner.sendall(token)
+            joiner = _open(relay_port, token)
             assert joiner.recv(1) == ROLE_JOINER
             pairs.append((host, joiner))
 
@@ -218,11 +237,9 @@ def test_a_finished_room_is_replaced_rather_than_handed_out_spent(relay_port):
 def _reopen_a_finished_room(relay_port: int) -> None:
     token = room_token(generate_passphrase())
 
-    host = socket.create_connection(("127.0.0.1", relay_port), timeout=10)
-    host.sendall(token)
+    host = _open(relay_port, token)
     assert host.recv(1) == ROLE_HOST
-    joiner = socket.create_connection(("127.0.0.1", relay_port), timeout=10)
-    joiner.sendall(token)
+    joiner = _open(relay_port, token)
     assert joiner.recv(1) == ROLE_JOINER
 
     host.close()
@@ -231,9 +248,8 @@ def _reopen_a_finished_room(relay_port: int) -> None:
     # Straight back in on the same key, with no pause: the point is that the
     # newcomer is served however far the old room's cleanup happens to have
     # got, including the window where it is dead but still in the table.
-    again = socket.create_connection(("127.0.0.1", relay_port), timeout=10)
+    again = _open(relay_port, token)
     try:
-        again.sendall(token)
         again.settimeout(10)
         assert again.recv(1) == ROLE_HOST, (
             "the newcomer was not made the host of a fresh room"
@@ -323,6 +339,242 @@ def test_a_session_with_nowhere_to_report_still_works(relay_port):
     finally:
         one.close()
         two.close()
+
+
+# ----------------------------------------------------------------------
+# The ringside
+#
+# A room can keep up to three seats. Whoever opens it decides whether it
+# has any; anyone arriving to find the two places taken is sat down instead
+# of being turned away. Seats are fed both fighters and heard by neither.
+# ----------------------------------------------------------------------
+def _seats_open(relay_port, token, count):
+    """Take `count` seats in a room that already has its two fighters."""
+    return [_open(relay_port, token) for _ in range(count)]
+
+
+def test_a_room_has_no_ringside_unless_it_was_asked_for(relay_port):
+    """The default is a fight nobody watches."""
+    token = room_token(generate_passphrase())
+    host = _open(relay_port, token, 0)
+    joiner = _open(relay_port, token, 0)
+    try:
+        assert host.recv(1) == ROLE_HOST
+        assert joiner.recv(1) == ROLE_JOINER
+
+        # Asking on the way in is too late; the opener already answered.
+        third = _open(relay_port, token, OPTION_RINGSIDE)
+        try:
+            assert third.recv(1) == ROLE_FULL
+        finally:
+            third.close()
+    finally:
+        host.close()
+        joiner.close()
+
+
+def test_a_ringside_seats_three_and_no_more(relay_port):
+    token = room_token(generate_passphrase())
+    host = _open(relay_port, token, OPTION_RINGSIDE)
+    joiner = _open(relay_port, token)
+    seats = []
+    try:
+        assert host.recv(1) == ROLE_HOST
+        assert joiner.recv(1) == ROLE_JOINER
+
+        for taken in range(MAX_SEATS):
+            seat = _open(relay_port, token)
+            seats.append(seat)
+            assert seat.recv(1) == ROLE_SPECTATOR, f"seat {taken + 1} was refused"
+
+        spare = _open(relay_port, token)
+        try:
+            assert spare.recv(1) == ROLE_FULL, "a fourth watcher got in"
+        finally:
+            spare.close()
+    finally:
+        for sock in [host, joiner, *seats]:
+            sock.close()
+
+
+def test_a_seat_is_told_which_fighter_moved(relay_port):
+    """A player's socket carries one conversation; a seat's carries two.
+    Without the tag they would arrive shuffled together with no way to tell
+    whose move was whose."""
+    token = room_token(generate_passphrase())
+    host = _open(relay_port, token, OPTION_RINGSIDE)
+    joiner = _open(relay_port, token)
+    assert host.recv(1) == ROLE_HOST
+    assert joiner.recv(1) == ROLE_JOINER
+    seat = _open(relay_port, token)
+    assert seat.recv(1) == ROLE_SPECTATOR
+    try:
+        host.sendall(b"from the host")
+        time.sleep(0.3)
+        joiner.sendall(b"from the joiner")
+
+        header = struct.Struct(SEAT_HEADER)
+        seat.settimeout(10)
+        buf = bytearray()
+        got = []
+        while len(got) < 2:
+            buf += seat.recv(4096)
+            while len(buf) >= header.size:
+                tag, length = header.unpack(buf[: header.size])
+                if len(buf) < header.size + length:
+                    break
+                got.append((tag, bytes(buf[header.size : header.size + length])))
+                del buf[: header.size + length]
+
+        assert got == [(ROLE_HOST, b"from the host"), (ROLE_JOINER, b"from the joiner")]
+    finally:
+        for sock in (host, joiner, seat):
+            sock.close()
+
+
+def test_the_players_still_get_each_other_untagged(relay_port):
+    """The seats are a copy. What the two fighters exchange is unchanged,
+    because their splice is what a match actually runs on."""
+    token = room_token(generate_passphrase())
+    host = _open(relay_port, token, OPTION_RINGSIDE)
+    joiner = _open(relay_port, token)
+    assert host.recv(1) == ROLE_HOST
+    assert joiner.recv(1) == ROLE_JOINER
+    seat = _open(relay_port, token)
+    assert seat.recv(1) == ROLE_SPECTATOR
+    try:
+        # Clear the seat notice the relay sends the fighters.
+        host.settimeout(5)
+        joiner.settimeout(5)
+        host.recv(4096)
+        joiner.recv(4096)
+
+        host.sendall(b"exactly these bytes")
+        assert joiner.recv(4096) == b"exactly these bytes"
+    finally:
+        for sock in (host, joiner, seat):
+            sock.close()
+
+
+def test_nothing_a_seat_sends_reaches_the_fight(relay_port):
+    """The ringside is one way. A watcher cannot interrupt a match, whatever
+    they are running."""
+    token = room_token(generate_passphrase())
+    host = _open(relay_port, token, OPTION_RINGSIDE)
+    joiner = _open(relay_port, token)
+    assert host.recv(1) == ROLE_HOST
+    assert joiner.recv(1) == ROLE_JOINER
+    seat = _open(relay_port, token)
+    assert seat.recv(1) == ROLE_SPECTATOR
+    try:
+        host.settimeout(5)
+        joiner.settimeout(5)
+        host.recv(4096)  # the seat notice
+        joiner.recv(4096)
+
+        seat.sendall(b"let me in")
+        time.sleep(0.4)
+
+        for sock, who in ((host, "host"), (joiner, "joiner")):
+            sock.settimeout(0.5)
+            with pytest.raises((socket.timeout, TimeoutError)):
+                sock.recv(4096)
+    finally:
+        for sock in (host, joiner, seat):
+            sock.close()
+
+
+def test_the_fighters_are_told_how_many_are_watching(relay_port):
+    """They have no other way of knowing. A seat cannot speak to them, so
+    the relay says so on its behalf -- the one frame it ever writes."""
+    token = room_token(generate_passphrase())
+    host = _open(relay_port, token, OPTION_RINGSIDE)
+    joiner = _open(relay_port, token)
+    assert host.recv(1) == ROLE_HOST
+    assert joiner.recv(1) == ROLE_JOINER
+    seats = []
+    try:
+        for _ in range(2):
+            seat = _open(relay_port, token)
+            assert seat.recv(1) == ROLE_SPECTATOR
+            seats.append(seat)
+
+        host.settimeout(10)
+        counts = _seat_counts(host, 2)
+        assert counts == [1, 2], counts
+
+        seats.pop().close()
+        assert _seat_counts(host, 1) == [0 + 1], "the count was not corrected"
+    finally:
+        for sock in [host, joiner, *seats]:
+            sock.close()
+
+
+def _seat_counts(sock, how_many):
+    """Read `how_many` of the relay's ringside frames off a fighter's socket."""
+    from fusionfire.net import protocol
+
+    found, buf = [], bytearray()
+    sock.settimeout(10)
+    while len(found) < how_many:
+        buf += sock.recv(4096)
+        while len(buf) >= protocol.HEADER_SIZE:
+            length = protocol.read_length(bytes(buf[: protocol.HEADER_SIZE]))
+            if len(buf) < protocol.HEADER_SIZE + length:
+                break
+            body = bytes(buf[protocol.HEADER_SIZE : protocol.HEADER_SIZE + length])
+            del buf[: protocol.HEADER_SIZE + length]
+            message = protocol.decode(body)
+            if message["type"] == "ringside":
+                found.append(message["seats"])
+    return found
+
+
+def test_a_session_given_a_seat_says_so(relay_port):
+    """And says which fighter each message came from, because at a ringside
+    neither of them is "you"."""
+    passphrase = generate_passphrase()
+    first, second, watcher = Recorder(), Recorder(), Recorder()
+    host = first.bind(RelaySession)
+    joiner = second.bind(RelaySession)
+    seat = watcher.bind(RelaySession)
+    try:
+        host.connect_relay("127.0.0.1", relay_port, passphrase, secure=False, ringside=True)
+        time.sleep(0.3)
+        joiner.connect_relay("127.0.0.1", relay_port, passphrase, secure=False)
+        assert second.connected.wait(20)
+        joiner.send("hello", version=1, name="Blue Screen", gender="male")
+        assert first.connected.wait(20)
+
+        seat.connect_relay("127.0.0.1", relay_port, passphrase, secure=False)
+        assert watcher.connected.wait(20), "the seat never connected"
+        assert seat.is_spectator, "the session did not know it had a seat"
+        assert not host.is_spectator and not joiner.is_spectator
+
+        host.send("strike", weapon="gun", outcome="hit", damage=12)
+        joiner.send("strike", weapon="whip", outcome="miss", damage=0)
+        deadline = time.monotonic() + 15
+        while len(watcher.messages) < 2 and time.monotonic() < deadline:
+            time.sleep(0.05)
+
+        seen = [(m["source"], m["type"]) for m in watcher.messages]
+        assert ("host", "strike") in seen, seen
+        assert ("joiner", "strike") in seen, seen
+    finally:
+        for session in (host, joiner, seat):
+            session.close()
+
+
+def test_an_encrypted_fight_cannot_be_watched():
+    """TLS is a conversation between two ends. There is no third place to
+    stand, and pretending otherwise would mean handing the relay a key."""
+    session = RelaySession(
+        on_message=lambda m: None,
+        on_connected=lambda: None,
+        on_disconnected=lambda r: None,
+    )
+    with pytest.raises(ValueError):
+        session.connect_relay("127.0.0.1", 6001, generate_passphrase(), ringside=True)
 
 
 def test_a_third_player_is_refused_a_full_room(relay_port):
@@ -712,16 +964,13 @@ def test_raw_clients_get_host_then_joiner_then_full(relay_port):
     passphrase = generate_passphrase()
     token = room_token(passphrase)
 
-    first = socket.create_connection(("127.0.0.1", relay_port), timeout=10)
-    first.sendall(token)
+    first = _open(relay_port, token)
     assert first.recv(1) == ROLE_HOST
 
-    second = socket.create_connection(("127.0.0.1", relay_port), timeout=10)
-    second.sendall(token)
+    second = _open(relay_port, token)
     assert second.recv(1) == ROLE_JOINER
 
-    third = socket.create_connection(("127.0.0.1", relay_port), timeout=10)
-    third.sendall(token)
+    third = _open(relay_port, token)
     assert third.recv(1) == ROLE_FULL
 
     for sock in (first, second, third):
@@ -731,12 +980,10 @@ def test_raw_clients_get_host_then_joiner_then_full(relay_port):
 def test_bytes_flow_between_spliced_connections(relay_port):
     token = room_token(generate_passphrase())
 
-    first = socket.create_connection(("127.0.0.1", relay_port), timeout=10)
-    first.sendall(token)
+    first = _open(relay_port, token)
     assert first.recv(1) == ROLE_HOST
 
-    second = socket.create_connection(("127.0.0.1", relay_port), timeout=10)
-    second.sendall(token)
+    second = _open(relay_port, token)
     assert second.recv(1) == ROLE_JOINER
 
     second.sendall(b"x" * 5000)

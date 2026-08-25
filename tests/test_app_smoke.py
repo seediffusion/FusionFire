@@ -2707,6 +2707,8 @@ def test_leaving_a_match_returns_to_the_menu(match):
 class _FakeNet:
     """Records what the panel tries to send."""
 
+    is_spectator = False
+
     def __init__(self):
         self.sent = []
         self.closed = []
@@ -2734,6 +2736,11 @@ def online_match(app_ctx, monkeypatch):
         online=True,
     )
     app_ctx.engine = engine
+    # The context holds the connection too, exactly as start_online leaves
+    # it. Wiring only the panel left anything that answers through the
+    # application -- the ringside notices, a resignation -- looking as
+    # though there were no connection at all.
+    app_ctx.net = net
     panel = GamePanel(app_ctx.frame, app_ctx, engine, net=net)
     app_ctx.frame.swap_content(panel)
     panel._cancel_intro_timer()
@@ -2962,6 +2969,262 @@ def test_no_line_in_the_dialog_is_a_paragraph(app_ctx):
                         )
                 finally:
                     dialog.Destroy()
+
+
+# ----------------------------------------------------------------------
+# The ringside
+#
+# A seat hears both fighters and is neither of them, so every line is
+# written in the third person and every key that would change the fight is
+# refused. What arrives is tagged with whoever sent it.
+# ----------------------------------------------------------------------
+class _SeatNet(_FakeNet):
+    is_spectator = True
+    is_host = False
+
+
+def _hellos(ctx):
+    """Both fighters introduce themselves, as they do before a seat exists."""
+    ctx._on_net_message(
+        {"type": "hello", "name": "Ada Lovelace", "gender": "female",
+         "bullets": 8, "restores": 4, "source": "host"}
+    )
+    ctx._on_net_message(
+        {"type": "hello", "name": "Blue Screen", "gender": "male", "source": "joiner"}
+    )
+
+
+@pytest.fixture
+def ringside(app_ctx):
+    """A seat with the fight already on screen."""
+    app_ctx.net = _SeatNet()
+    _hellos(app_ctx)
+    panel = app_ctx.frame.content
+    panel._cancel_intro_timer()
+    app_ctx.engine.begin_play()
+    return app_ctx, panel
+
+
+def test_a_seat_builds_the_fight_from_the_two_hellos(ringside):
+    ctx, _panel = ringside
+    assert ctx.engine is not None
+    assert ctx.engine.spectating
+    assert ctx.engine.player.name == "Ada Lovelace"
+    assert ctx.engine.opponent.name == "Blue Screen"
+    assert ctx.engine.player.bullets == 8, "the host's supplies decide both sides"
+
+
+def test_the_commentary_names_both_fighters(ringside):
+    """"You shoot and hit for 12" is a sentence about somebody who is not
+    listening."""
+    from fusionfire.game.events import Say
+
+    ctx, _panel = ringside
+    said = []
+    monkey = ctx.presenter.render
+    ctx.presenter.render = lambda events: (
+        said.extend(e.text for e in events if isinstance(e, Say)), monkey(events)
+    )[1]
+
+    ctx._on_net_message(
+        {"type": "strike", "weapon": "gun", "outcome": "hit", "damage": 12,
+         "source": "host"}
+    )
+    ctx._on_net_message(
+        {"type": "strike", "weapon": "whip", "outcome": "miss", "damage": 0,
+         "source": "joiner"}
+    )
+
+    joined = " ".join(said)
+    assert "Ada Lovelace shoots" in joined, joined
+    assert "Blue Screen lashes" in joined, joined
+    assert "You " not in joined, f"the ringside was spoken to as a fighter: {joined}"
+
+
+def test_a_seat_cannot_join_in(ringside):
+    """Nothing it sends is carried anywhere, so the keys that would fight
+    say so rather than pretending."""
+    ctx, panel = ringside
+    heard = _SpeechLog()
+    panel.speech = heard
+    before = ctx.engine.opponent.health
+
+    for action in (Action.FIRE_GUN, Action.CRACK_WHIP, Action.LOAD_GUN,
+                   Action.USE_BOMB, Action.RESTORE_HEALTH, Action.CHEAT_PROMPT):
+        panel.handle_action(action)
+
+    assert ctx.engine.opponent.health == before
+    assert not ctx.net.sent, f"a seat sent something: {ctx.net.sent}"
+    assert heard.spoken and "watching" in heard.spoken[-1].lower(), heard.spoken
+
+
+def test_a_seat_can_still_listen(ringside):
+    """Everything that reads the fight keeps working. A ringside seat you
+    cannot get the score out of is not worth sitting in."""
+    ctx, panel = ringside
+    heard = _SpeechLog()
+    ctx.presenter.speech = heard
+
+    panel.handle_action(Action.PLAYER_STATUS)
+    panel.handle_action(Action.OPPONENT_STATUS)
+
+    said = " ".join(heard.spoken)
+    assert "Ada Lovelace" in said, said
+    assert "Blue Screen" in said, said
+
+
+def test_the_status_line_names_both_fighters(ringside):
+    ctx, panel = ringside
+    panel._refresh_status()
+    line = panel.status_line.GetLabel()
+    assert "Ada Lovelace" in line and "Blue Screen" in line, line
+    assert "You " not in line, line
+
+
+def test_a_seat_taken_late_is_caught_up(app_ctx):
+    """Somebody sitting down ten minutes in has missed every strike that got
+    the fight to where it is."""
+    app_ctx.net = _SeatNet()
+    heard = _SpeechLog()
+    app_ctx.presenter.speech = heard
+
+    app_ctx._on_net_message({
+        "type": "state", "source": "host",
+        "host_name": "Ada Lovelace", "host_gender": "female", "host_health": 72,
+        "host_points": 6, "host_bullets": 4, "host_restores": 2, "host_bombs": 0,
+        "host_loaded": 1,
+        "join_name": "Blue Screen", "join_gender": "male", "join_health": 41,
+        "join_points": 4, "join_bullets": 7, "join_restores": 3, "join_bombs": 1,
+        "join_loaded": 0, "turn": "joiner",
+    })
+
+    engine = app_ctx.engine
+    assert engine is not None, "the scoreboard did not put the fight on screen"
+    assert (engine.player.name, engine.player.health, engine.player.points) == (
+        "Ada Lovelace", 72, 6,
+    )
+    assert (engine.opponent.name, engine.opponent.health) == ("Blue Screen", 41)
+    assert engine.turn is Side.OPPONENT
+
+    said = " ".join(heard.spoken)
+    assert "72" in said and "41" in said, said
+    assert "Blue Screen to move" in said, said
+
+
+# ----------------------------------------------------------------------
+# What the fighters are told about their audience
+# ----------------------------------------------------------------------
+def test_the_fighters_hear_a_seat_being_taken(online_match):
+    ctx, _panel, net = online_match
+    net.is_host = True
+    heard = _listen(ctx)
+
+    ctx._on_net_message({"type": "ringside", "seats": 1})
+
+    assert any("ringside seat" in line for line in heard.spoken), heard.spoken
+
+
+def test_the_host_posts_the_scoreboard_for_a_new_seat(online_match):
+    ctx, _panel, net = online_match
+    net.is_host = True
+    ctx.engine.player.health = 72
+    ctx.engine.opponent.health = 41
+
+    ctx._on_net_message({"type": "ringside", "seats": 1})
+
+    posted = [fields for kind, fields in net.sent if kind == "state"]
+    assert posted, f"nothing was posted for the seat: {net.sent}"
+    assert posted[0]["host_health"] == 72
+    assert posted[0]["join_health"] == 41
+
+
+def test_only_the_host_posts_the_scoreboard(online_match):
+    """Two scoreboards would be one too many, and the joiner's would have
+    the fighters the wrong way round."""
+    ctx, _panel, net = online_match
+    net.is_host = False
+
+    ctx._on_net_message({"type": "ringside", "seats": 1})
+
+    assert not [kind for kind, _ in net.sent if kind == "state"], net.sent
+
+
+def test_the_same_count_is_not_announced_twice(online_match):
+    ctx, _panel, net = online_match
+    net.is_host = True
+    heard = _listen(ctx)
+
+    ctx._on_net_message({"type": "ringside", "seats": 1})
+    ctx._on_net_message({"type": "ringside", "seats": 1})
+
+    seats = [line for line in heard.spoken if "ringside seat" in line]
+    assert len(seats) == 1, heard.spoken
+
+
+def test_a_seat_emptying_is_announced_too(online_match):
+    ctx, _panel, net = online_match
+    net.is_host = True
+    ctx._on_net_message({"type": "ringside", "seats": 2})
+    heard = _listen(ctx)
+
+    ctx._on_net_message({"type": "ringside", "seats": 1})
+
+    assert any("empty" in line.lower() for line in heard.spoken), heard.spoken
+
+
+# ----------------------------------------------------------------------
+# The host's switch
+# ----------------------------------------------------------------------
+def test_the_ringside_is_offered_on_a_relay_without_a_passphrase(app_ctx):
+    from fusionfire.ui.online_dialog import OnlineDialog
+
+    dialog = OnlineDialog(app_ctx.frame, app_ctx.settings)
+    try:
+        assert dialog.ringside_box.IsEnabled(), "quick play on a relay can be watched"
+
+        dialog.security_choice.SetSelection(1)
+        dialog._sync()
+        assert not dialog.ringside_box.IsEnabled(), "an encrypted fight cannot be watched"
+
+        dialog.security_choice.SetSelection(0)
+        dialog.connection_choice.SetSelection(1)
+        dialog._sync()
+        assert not dialog.ringside_box.IsEnabled(), "there are no seats without a relay"
+    finally:
+        dialog.Destroy()
+
+
+def test_the_ringside_choice_is_remembered(app_ctx):
+    from fusionfire.ui.online_dialog import OnlineDialog
+
+    app_ctx.settings.ringside = False
+    dialog = OnlineDialog(app_ctx.frame, app_ctx.settings)
+    try:
+        dialog.relay_field.SetValue("relay.example.org")
+        dialog.ringside_box.SetValue(True)
+        assert dialog._apply() is True
+        assert dialog.ringside is True
+        assert app_ctx.settings.ringside is True
+    finally:
+        dialog.Destroy()
+
+
+def test_a_ringside_is_not_asked_for_when_it_cannot_be_had(app_ctx):
+    """The box is disabled in encrypted mode; a value left ticked in it must
+    not travel."""
+    from fusionfire.ui.online_dialog import OnlineDialog
+
+    app_ctx.settings.ringside = True
+    dialog = OnlineDialog(app_ctx.frame, app_ctx.settings)
+    try:
+        dialog.relay_field.SetValue("relay.example.org")
+        dialog.security_choice.SetSelection(1)
+        dialog.pass_field.SetValue("a passphrase long enough")
+        dialog._sync()
+        assert dialog._apply() is True
+        assert dialog.ringside is False
+    finally:
+        dialog.Destroy()
 
 
 # ----------------------------------------------------------------------

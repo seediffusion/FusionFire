@@ -44,11 +44,24 @@ class GamePanel(wx.Panel):
     #: :meth:`fusionfire.app.AppContext.refresh_input_mode`.
     gamepad_navigation = False
 
-    def __init__(self, parent: wx.Window, app_ctx, engine: Engine, *, net=None) -> None:
+    def __init__(
+        self,
+        parent: wx.Window,
+        app_ctx,
+        engine: Engine,
+        *,
+        net=None,
+        spectating: bool = False,
+    ) -> None:
         super().__init__(parent)
         self.ctx = app_ctx
         self.engine = engine
         self.net = net
+        #: Watching from a ringside seat. Everything that reads the fight
+        #: still works -- the transcript, the status keys, the volumes -- and
+        #: everything that would change it is refused, because nothing this
+        #: end sends is carried anywhere.
+        self.spectating = spectating
         self.presenter = app_ctx.presenter
         self.audio = app_ctx.audio
         self.speech = app_ctx.speech
@@ -91,7 +104,9 @@ class GamePanel(wx.Panel):
         hint = wx.StaticText(
             self,
             label=(
-                "1 shoot, 2 lash, 3 load, 4 your status, 5 their status, "
+                "Ringside. 4 and 5 for each fighter, R to repeat, escape to leave."
+                if self.spectating
+                else "1 shoot, 2 lash, 3 load, 4 your status, 5 their status, "
                 "6 power weapon, 7 heal, 8 talk, 9 bomb. F1 for the full list."
             ),
         )
@@ -211,10 +226,28 @@ class GamePanel(wx.Panel):
             return
         self.handle_action(action)
 
+    #: What a seat may still do. Everything else is somebody else's fight.
+    _RINGSIDE_ACTIONS = frozenset({
+        Action.PLAYER_STATUS,
+        Action.OPPONENT_STATUS,
+        Action.REPEAT_LAST,
+        Action.SOUND_UP,
+        Action.SOUND_DOWN,
+        Action.MUSIC_UP,
+        Action.MUSIC_DOWN,
+        Action.TOGGLE_MUSIC,
+        Action.TOGGLE_SCREAMS,
+        Action.QUIT_MATCH,
+    })
+
     def handle_action(self, action: Action) -> None:
         """Single entry point for keyboard and gamepad alike."""
         if self._bonus_open:
             return  # the bonus dialog is modal and handles its own input
+
+        if self.spectating and action not in self._RINGSIDE_ACTIONS:
+            self.speech.report("You are watching. Press escape to leave the ringside.")
+            return
 
         handler = self._ACTIONS.get(action)
         if handler is None:
@@ -425,6 +458,17 @@ class GamePanel(wx.Panel):
             self.presenter.report(result.message)
             self._refresh_status()
 
+    def _refresh_ringside_status(self) -> None:
+        """Both fighters, named, because neither of them is the reader."""
+        player, opponent = self.engine.player, self.engine.opponent
+        to_move = player if self.engine.turn is Side.PLAYER else opponent
+        turn = "fight over" if self.engine.phase is Phase.FINISHED else f"{to_move.name} to move"
+        self.status_line.SetLabel(
+            f"{player.name} {max(0, player.health)} health, {player.points} points. "
+            f"{opponent.name} {max(0, opponent.health)} health, "
+            f"{opponent.points} points. {turn}."
+        )
+
     def _do_quit(self) -> None:
         self.ctx.leave_match()
 
@@ -469,7 +513,7 @@ class GamePanel(wx.Panel):
             self._refresh_status()
             if event.side is Side.OPPONENT and self.net is None:
                 self._schedule_opponent()
-            elif event.side is Side.PLAYER and self.net is not None:
+            elif event.side is Side.PLAYER and self.net is not None and not self.spectating:
                 # The top of a round, which is where the offline game rolls
                 # for a bonus too -- offline it does so just after the
                 # machine's move, which is the same moment.
@@ -512,7 +556,7 @@ class GamePanel(wx.Panel):
     # ------------------------------------------------------------------
     def _send_strike(self, event: StrikeResolved) -> None:
         """Report one of our own attacks."""
-        if self.net is None or event.attacker is not Side.PLAYER:
+        if self.net is None or self.spectating or event.attacker is not Side.PLAYER:
             return
         # The protocol carries the three weapons online play uses. The power
         # weapon is offline-only, and a backfire cannot reach the wire.
@@ -722,6 +766,9 @@ class GamePanel(wx.Panel):
     # ------------------------------------------------------------------
     def _refresh_status(self) -> None:
         player, opponent = self.engine.player, self.engine.opponent
+        if self.spectating:
+            self._refresh_ringside_status()
+            return
         turn = "your turn" if self.engine.turn is Side.PLAYER else f"{opponent.name}'s turn"
         if self.engine.phase is Phase.FINISHED:
             turn = "match over"

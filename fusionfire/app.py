@@ -22,8 +22,10 @@ from . import __title__, __version__, assets, paths
 from .audio import NULL_HANDLE, AudioEngine
 from .config import Settings, Stats
 from .game import greetings, names
+from .game.constants import DEFAULT_ONLINE_SUPPLY as K_DEFAULT_SUPPLY
 from .game.constants import Phase, Side
 from .game.engine import Combatant, Engine
+from .game.events import StatsChanged, TurnChanged
 from .game.difficulty import get as get_difficulty
 from .input.actions import Action
 from .input.gamepad import GamepadManager
@@ -70,6 +72,32 @@ class _AnyModal:
 _ANY_MODAL = _AnyModal()
 
 
+def _pan_for(side) -> float:
+    """Put the two fighters on opposite sides of the ringside's head."""
+    from .game.constants import Side as _Side
+
+    return -0.3 if side is _Side.PLAYER else 0.3
+
+
+def _weapon_sound(side, weapon) -> str:
+    """Which recording an attack from ``side`` uses.
+
+    The two sets of weapon recordings exist so a fighter can tell their own
+    shot from the machine's. At the ringside neither shot is yours, so the
+    same two sets do the same job for a different reason: they tell the two
+    fighters apart. Either way it is the side that decides, so this needs to
+    know nothing about who is listening.
+    """
+    from .game.constants import Side as _Side
+
+    mine = side is _Side.PLAYER
+    return {
+        "gun": "usergun" if mine else "computergun",
+        "whip": "userwhip" if mine else "computerwhip",
+        "bomb": "userbomb" if mine else "computerbomb",
+    }[weapon.value]
+
+
 class AppContext:
     """Long-lived services, and the transitions between screens."""
 
@@ -94,6 +122,18 @@ class AppContext:
         #: The last line the connection reported about itself, so the same
         #: one is not spoken twice.
         self._net_status = ""
+        #: Whether this player asked the relay to keep seats for onlookers.
+        self._ringside = False
+        #: What a seat has been told about the two fighters, by name and
+        #: gender, keyed by which end of the relay they are on.
+        self._fighters: dict[str, tuple[str, str]] = {}
+        self._ringside_supplies = (
+            self.settings.online_bullets,
+            self.settings.online_restores,
+        )
+        #: How many are watching, so the fighters are only told when it
+        #: changes rather than every time the relay repeats itself.
+        self._seats = 0
         #: The bullets and restores this player asked for in the online
         #: dialog. Sent in our hello; used only if the relay makes us host.
         self._online_supplies = (
@@ -548,6 +588,7 @@ class AppContext:
             secure = dialog.secure
             hosting = connection == "p2p" and dialog.hosting
             bind_host = dialog.bind_host
+            self._ringside = dialog.ringside
             shared_address = dialog._shareable_address() if hosting else ""
             self._online_supplies = (dialog.bullets, dialog.restores)
         finally:
@@ -596,7 +637,9 @@ class AppContext:
 
         try:
             if connection == "relay":
-                self.net.connect_relay(host, port, passphrase, secure=secure)
+                self.net.connect_relay(
+                    host, port, passphrase, secure=secure, ringside=self._ringside
+                )
             elif hosting:
                 self.net.listen(
                     port=port, passphrase=passphrase, secure=secure, host=bind_host
@@ -647,6 +690,13 @@ class AppContext:
     def _on_net_connected(self) -> None:
         self.audio.stop_music()
         self._close_waiting()
+        if self.net.is_spectator:
+            # Nothing a seat sends is carried, so there is nobody to
+            # introduce ourselves to. Wait to be told what is going on.
+            self.presenter.report(
+                "You have a ringside seat. Waiting for the fight to reach you."
+            )
+            return
         bullets, restores = self._online_supplies
         self.net.send(
             "hello",
@@ -674,6 +724,14 @@ class AppContext:
 
     def _on_net_message(self, message: dict) -> None:
         kind = message.get("type")
+        if kind == "ringside":
+            self._seats_changed(int(message["seats"]))
+            return
+        if self.net is not None and self.net.is_spectator:
+            self._watch(message)
+            return
+        if kind == "state":
+            return  # for the ringside; a fighter already knows all of it
         if kind == "hello":
             self._begin_online_match(message)
         elif kind == "chat":
@@ -733,6 +791,59 @@ class AppContext:
         panel = getattr(self.frame, "content", None)
         return panel if isinstance(panel, GamePanel) else None
 
+    def _seats_changed(self, seats: int) -> None:
+        """Someone has taken or given up a ringside seat.
+
+        Only the relay sends this, and only to the two fighters -- a seat
+        cannot speak, so the relay saying so is the one way they can know
+        anybody is out there. Whoever is hosting then posts the scoreboard,
+        because a watcher who sat down ten minutes in has missed every
+        strike that got the fight to where it is.
+        """
+        before, self._seats = self._seats, max(0, seats)
+        if self._seats == before:
+            return
+        if self._seats > before:
+            self.presenter.report(
+                f"Someone has taken a ringside seat. {self._describe_seats()}."
+            )
+            self._post_the_scoreboard()
+        else:
+            self.presenter.report(f"A ringside seat is empty. {self._describe_seats()}.")
+
+    def _describe_seats(self) -> str:
+        if self._seats == 0:
+            return "Nobody is watching"
+        if self._seats == 1:
+            return "One person is watching"
+        return f"{self._seats} people are watching"
+
+    def _post_the_scoreboard(self) -> None:
+        """Send the whole fight in one message, for whoever just sat down."""
+        if self.net is None or self.engine is None or not self.net.is_host:
+            return
+        us, them = self.engine.player, self.engine.opponent
+        self.net.send(
+            "state",
+            host_name=us.name,
+            host_gender=us.gender,
+            host_health=max(-400, us.health),
+            host_points=us.points,
+            host_bullets=us.bullets,
+            host_restores=us.restores,
+            host_bombs=us.bombs,
+            host_loaded=int(us.gun_loaded),
+            join_name=them.name,
+            join_gender=them.gender,
+            join_health=max(-400, them.health),
+            join_points=them.points,
+            join_bullets=them.bullets,
+            join_restores=them.restores,
+            join_bombs=them.bombs,
+            join_loaded=int(them.gun_loaded),
+            turn="host" if self.engine.turn is Side.PLAYER else "joiner",
+        )
+
     def _begin_online_match(self, hello: dict) -> None:
         if self.engine is not None:
             return  # a duplicate hello; ignore it
@@ -775,42 +886,167 @@ class AppContext:
         first = Side.PLAYER if self.net.is_host else Side.OPPONENT
         panel.begin(first=first)
 
+    # ------------------------------------------------------------------
+    # The ringside
+    #
+    # A seat hears both fighters and is neither of them. Every message
+    # arrives tagged with whoever sent it, and is applied to a local engine
+    # in which the host is the player and the joiner is the opponent -- an
+    # arbitrary choice, made once and kept, so that "host" always means the
+    # same side of the scoreboard.
+    # ------------------------------------------------------------------
+    def _watch(self, message: dict) -> None:
+        kind = message.get("type")
+        source = message.get("source", "host")
+
+        if kind == "hello":
+            self._ringside_hello(source, message)
+            return
+        if kind == "state":
+            self._ringside_state(message)
+            return
+        if self.engine is None:
+            return  # nothing to apply it to yet
+
+        side = Side.PLAYER if source == "host" else Side.OPPONENT
+        who = self.engine.player if side is Side.PLAYER else self.engine.opponent
+
+        if kind == "chat":
+            self.presenter.report(f"{who.name} says: {message['text']}")
+        elif kind == "comment":
+            self.audio.play(f"comment_{message['key']}", pan=_pan_for(side))
+        elif kind == "laugh":
+            from .assets import laugh_group
+
+            self.audio.play_one_of(laugh_group(who.gender), pan=_pan_for(side))
+        elif kind == "resign":
+            if not self._match_finished():
+                self.presenter.report(
+                    message.get("reason") or f"{who.name} left the fight."
+                )
+                self.leave_match()
+        elif kind in ("strike", "heal", "load"):
+            self._apply_move(side, message)
+
+    def _ringside_hello(self, source: str, hello: dict) -> None:
+        """One of the fighters introduced themselves. Wait for both."""
+        self._fighters[source] = (hello["name"], hello["gender"])
+        supplies = (
+            hello.get("bullets", K_DEFAULT_SUPPLY),
+            hello.get("restores", K_DEFAULT_SUPPLY),
+        )
+        if source == "host":
+            self._ringside_supplies = supplies
+        if len(self._fighters) == 2 and self.engine is None:
+            self._start_watching()
+
+    def _start_watching(self) -> None:
+        """Both fighters are known; put the fight on screen."""
+        from .ui.game_panel import GamePanel
+
+        host_name, host_gender = self._fighters["host"]
+        join_name, join_gender = self._fighters["joiner"]
+        bullets, restores = self._ringside_supplies
+
+        self.engine = Engine(
+            Combatant(name=host_name, gender=host_gender, bullets=bullets, restores=restores),
+            Combatant(name=join_name, gender=join_gender),
+            get_difficulty(self.settings.difficulty),
+            online=True,
+            spectating=True,
+        )
+        panel = GamePanel(self.frame, self, self.engine, net=self.net, spectating=True)
+        self.frame.swap_content(panel)
+        self.frame.set_status(f"Ringside: {host_name} against {join_name}.")
+        panel.begin(first=Side.PLAYER)
+
+    def _ringside_state(self, state: dict) -> None:
+        """The scoreboard, posted by the host because we arrived late.
+
+        Everything before this happened out of earshot, so rather than
+        guessing, the fight is simply set to what the host says it is.
+        """
+        if self.engine is None:
+            self._fighters = {
+                "host": (state["host_name"], state["host_gender"]),
+                "joiner": (state["join_name"], state["join_gender"]),
+            }
+            self._ringside_supplies = (state["host_bullets"], state["host_restores"])
+            self._start_watching()
+        if self.engine is None:
+            return
+
+        for who, prefix in ((self.engine.player, "host"), (self.engine.opponent, "join")):
+            who.name = state[f"{prefix}_name"]
+            who.gender = state[f"{prefix}_gender"]
+            who.health = state[f"{prefix}_health"]
+            who.points = state[f"{prefix}_points"]
+            who.bullets = state[f"{prefix}_bullets"]
+            who.restores = state[f"{prefix}_restores"]
+            who.bombs = state[f"{prefix}_bombs"]
+            who.gun_loaded = bool(state[f"{prefix}_loaded"])
+        self.engine.turn = Side.PLAYER if state["turn"] == "host" else Side.OPPONENT
+
+        self.presenter.render([StatsChanged(), TurnChanged(self.engine.turn)])
+        first, second = self.engine.player, self.engine.opponent
+        to_move = first if self.engine.turn is Side.PLAYER else second
+        self.presenter.report(
+            f"{first.name} {max(0, first.health)} health, {first.points} points. "
+            f"{second.name} {max(0, second.health)} health, {second.points} points. "
+            f"{to_move.name} to move."
+        )
+
     def _apply_remote_move(self, message: dict) -> None:
         """Render the opponent's action, which they have already resolved."""
+        self._apply_move(Side.OPPONENT, message)
+
+    def _apply_move(self, side: Side, message: dict) -> None:
+        """Apply a move somebody else resolved, to whichever side made it.
+
+        A fighter only ever calls this for their opponent. A seat calls it
+        for both, which is the only reason it takes a side at all.
+        """
         from .game.constants import Outcome, Weapon
         from .game.engine import Strike
         from .game.events import EventLog, StatsChanged
 
         kind = message["type"]
         log_ = EventLog()
+        mover = self.engine.player if side is Side.PLAYER else self.engine.opponent
+        # Same reasoning as _weapon_sound: the side picks the recording, and
+        # who is listening does not come into it.
+        theirs = side is Side.OPPONENT
 
         if kind == "strike":
             weapon = Weapon(message["weapon"])
             outcome = Outcome(message["outcome"])
-            log_.sound({"gun": "computergun", "whip": "computerwhip", "bomb": "computerbomb"}[weapon.value])
-            self._spend_for(weapon)
-            strike = Strike(Side.OPPONENT, weapon, outcome, message["damage"])
+            log_.sound(_weapon_sound(side, weapon))
+            self._spend_for(weapon, mover)
+            strike = Strike(side, weapon, outcome, message["damage"])
             self.engine._resolve(strike, log_)
             self.presenter.render(self.engine._end_turn(log_))
         elif kind == "heal":
-            self.engine.opponent.spend_restore()
-            self.engine.opponent.heal(message["amount"])
+            mover.spend_restore()
+            mover.heal(message["amount"])
             log_.add(StatsChanged())
-            log_.group("computerrestore")
+            group = "computerrestore" if theirs else "userrestore"
+            if theirs:
+                log_.group(group)
+            else:
+                log_.sound(group)
             log_.say(
-                f"{self.engine.opponent.name} restores {message['amount']} health.",
-                after="computerrestore",
+                f"{mover.name} restores {message['amount']} health.", after=group
             )
             self.presenter.render(self.engine._end_turn(log_))
         elif kind == "load":
             # Loading is a free action on both sides. Ending the turn here
             # would advance this engine while the sender's stayed put, and
             # the two would be arguing about whose go it is from then on.
-            self.engine.opponent.gun_loaded = True
-            log_.sound("computerload")
+            mover.gun_loaded = True
+            log_.sound("computerload" if theirs else "userload")
             self.presenter.render(log_.drain())
 
-    def _spend_for(self, weapon) -> None:
+    def _spend_for(self, weapon, other=None) -> None:
         """Run down the opponent's stock the way their own engine just did.
 
         Each player owns their own engine, and the opponent inside it is a
@@ -823,7 +1059,7 @@ class AppContext:
         """
         from .game.constants import Weapon
 
-        other = self.engine.opponent
+        other = self.engine.opponent if other is None else other
         if weapon is Weapon.GUN:
             other.spend_bullet()
             other.gun_loaded = False

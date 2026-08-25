@@ -262,9 +262,42 @@ Both players get the same bullets and health restores, set at the bottom of the 
 
 The bonus round happens online too. Both players get one at the same moment, each picking from their own thirteen notes, and the host sets the length. Neither of you ever sees the other's notes, only what they came to.
 
+### The ringside
+
+Up to three people can pull up a chair and watch the two of you knock lumps off each other. Tick "Let people watch (ringside)" before you start and anyone who types your room code once the fight is under way gets a seat instead of being turned away.
+
+#### If you are starting the fight
+
+1. Follow the quick play steps.
+2. Tick Let people watch (ringside) before you press OK.
+3. Send the room code to your opponent and to anyone you want watching.
+
+You are told when somebody sits down and when a seat empties, so you always know whether there is an audience. There is nothing else to do; the seats look after themselves.
+
+#### If you are taking a seat
+
+1. Choose Play online from the main menu.
+2. Leave Connection type on Relay server and Connection security on Quick play.
+3. Type the same room code the fighters are using.
+4. Type the relay server address and press OK.
+
+If the fight has not started yet you will be the opponent, not a spectator. Seats only exist once both fighters are in.
+
+From a seat you hear the whole fight called by name, since neither of them is you: "Ada Lovelace shoots and hits for 12. Blue Screen is on 29." Press `4` and `5` for each fighter's status, `R` to repeat the last line, and Escape to leave. Everything that would throw a punch tells you that you are watching.
+
+Sit down ten minutes in and you are caught up: the host posts the scoreboard the moment your seat is taken, so you get both fighters' health, points, ammunition and whose turn it is before the next blow lands.
+
+The ringside is one way. Nothing you do in a seat reaches the fight, which is why the fighters can be told there is an audience without having to worry about it.
+
+#### What the ringside will not do
+
+Watch an encrypted fight. The encryption runs between the two fighters and nobody else, and there is no third place to stand, so the tick box is unavailable the moment you choose a passphrase. It is a relay-only feature for the same reason there is no relay in direct peer to peer: there is nothing in the middle to copy the fight to anyone.
+
 ### Running your own relay
 
 The relay and the spy service are standalone scripts at the repository root. They import no game code and need no game dependencies, so they run on any machine with a plain Python 3.13.
+
+Update your relay when you update the game. The opening a client sends gained a byte when rooms gained a ringside, so an old relay and a new game will sit there staring at each other.
 
 1. Run the relay, where `<name>` is the name shown in the publicized servers list.
     ```

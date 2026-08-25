@@ -41,6 +41,7 @@ import logging
 import secrets
 import socket
 import ssl
+import struct
 import threading
 import time
 from hashlib import scrypt
@@ -49,12 +50,19 @@ from typing import Callable
 from . import protocol
 from .protocol import ProtocolError
 from .relay import (
+    OPTION_RINGSIDE,
     ROLE_FULL,
     ROLE_HOST,
     ROLE_JOINER,
+    ROLE_SPECTATOR,
     ROOM_TOKEN_LENGTH,
     ROOM_WAIT_TIMEOUT,
+    SEAT_HEADER,
 )
+
+#: A seat's stream is chunks tagged with the player they came from; see
+#: :data:`fusionfire.net.relay.SEAT_HEADER`.
+_SEAT_HEADER = struct.Struct(SEAT_HEADER)
 
 log = logging.getLogger(__name__)
 
@@ -253,6 +261,9 @@ class NetSession:
         #: Whether this session is the host. True for :class:`HostSession`,
         #: decided by arrival order at the relay for :class:`RelaySession`.
         self._is_host = False
+        #: True for a relay session that arrived to find the room already
+        #: had its two fighters and was given a seat instead.
+        self._is_spectator = False
         #: Bytes received but not yet formed into a complete frame.
         self._rxbuf = bytearray()
         #: Hold back ``on_connected`` until the opponent's first frame
@@ -288,6 +299,11 @@ class NetSession:
     def is_host(self) -> bool:
         """The host moves first, and only one end may be the host."""
         return self._is_host
+
+    @property
+    def is_spectator(self) -> bool:
+        """Watching rather than fighting. Nothing this end sends is carried."""
+        return self._is_spectator
     @property
     def connected(self) -> bool:
         return self._sock is not None and not self._stop.is_set()
@@ -697,14 +713,28 @@ class RelaySession(NetSession):
     """
 
     def connect_relay(
-        self, host: str, port: int, passphrase: str, *, secure: bool = True
+        self,
+        host: str,
+        port: int,
+        passphrase: str,
+        *,
+        secure: bool = True,
+        ringside: bool = False,
     ) -> None:
         """Dial the relay in the background and take whatever role it gives.
 
         ``secure=False`` is casual play: ``passphrase`` then holds a *public*
         room code (see :func:`casual_token`) and the match runs over a plain
         socket.
+
+        ``ringside`` asks the relay to keep seats for onlookers. Only the
+        first arrival's answer counts, because by the time anyone else turns
+        up the question has been settled. It is refused outright alongside
+        ``secure``: a seat cannot watch an encrypted match, since TLS is a
+        conversation between two ends and there is no third place to stand.
         """
+        if ringside and secure:
+            raise ValueError("An encrypted match cannot be watched.")
         if not host:
             raise ValueError("A relay server address is required.")
         if not 1 <= port <= 65535:
@@ -716,13 +746,15 @@ class RelaySession(NetSession):
 
         thread = threading.Thread(
             target=self._relay_once,
-            args=(host, port, passphrase, secure),
+            args=(host, port, passphrase, secure, ringside),
             name="net-relay",
             daemon=True,
         )
         thread.start()
 
-    def _relay_once(self, host: str, port: int, passphrase: str, secure: bool) -> None:
+    def _relay_once(
+        self, host: str, port: int, passphrase: str, secure: bool, ringside: bool = False
+    ) -> None:
         try:
             raw = socket.create_connection((host, port), timeout=CONNECT_TIMEOUT)
         except OSError as exc:
@@ -735,7 +767,8 @@ class RelaySession(NetSession):
             except OSError:
                 pass
             token = room_token(passphrase) if secure else casual_token(passphrase)
-            raw.sendall(token)
+            options = OPTION_RINGSIDE if ringside else 0
+            raw.sendall(token + bytes([options]))
             role = self._read_role(raw)
         except (socket.timeout, OSError) as exc:
             raw.close()
@@ -757,6 +790,16 @@ class RelaySession(NetSession):
                 f"one; the server is fine, that room is busy."
             )
             return
+        if role == ROLE_SPECTATOR:
+            # The room already had its two fighters and kept a seat for us.
+            raw.settimeout(READ_POLL)
+            self._is_spectator = True
+            self._sock = raw
+            self._status("You have a ringside seat. Waiting for the fight.")
+            log.info("Relay %s:%s gave us a ringside seat.", host, port)
+            self._begin_watching()
+            return
+
         if role not in (ROLE_HOST, ROLE_JOINER):
             raw.close()
             self._shutdown(
@@ -823,6 +866,86 @@ class RelaySession(NetSession):
             host, port, "host" if self._is_host else "joiner",
         )
         self._begin_reading()
+
+    def _begin_watching(self) -> None:
+        thread = threading.Thread(target=self._watch_loop, name="net-ringside", daemon=True)
+        self._thread = thread
+        thread.start()
+
+    def _watch_loop(self) -> None:
+        """Unpick a seat's stream into the two fights it is carrying.
+
+        A player's socket carries one conversation. A seat's carries two,
+        shuffled together in whatever order the relay happened to read them,
+        so each chunk arrives tagged with the player it came from. Sorting
+        them into a buffer each and framing those buffers separately is what
+        turns the pile back into two people taking turns.
+
+        Every message goes out with a ``source`` of ``host`` or ``joiner``,
+        because for a watcher that is the whole point: neither of them is
+        "you", and a strike with nobody attached to it is not a strike.
+        """
+        try:
+            self._on_connected()
+        except Exception:
+            log.exception("on_connected callback failed.")
+
+        header, buffers = bytearray(), {ROLE_HOST: bytearray(), ROLE_JOINER: bytearray()}
+        while not self._stop.is_set():
+            try:
+                chunk = self._sock.recv(8192)  # type: ignore[union-attr]
+            except socket.timeout:
+                continue
+            except OSError as exc:
+                self._shutdown(f"The ringside connection dropped: {exc}")
+                return
+            if not chunk:
+                self._shutdown("The fight is over and the ringside has emptied.")
+                return
+
+            header += chunk
+            while True:
+                if len(header) < _SEAT_HEADER.size:
+                    break
+                tag, length = _SEAT_HEADER.unpack(header[: _SEAT_HEADER.size])
+                if length > protocol.MAX_FRAME_SIZE * 4:
+                    self._shutdown("The relay sent a ringside chunk of an absurd size.")
+                    return
+                if len(header) < _SEAT_HEADER.size + length:
+                    break
+                body = bytes(header[_SEAT_HEADER.size : _SEAT_HEADER.size + length])
+                del header[: _SEAT_HEADER.size + length]
+                if tag in buffers:
+                    buffers[tag] += body
+                    self._deliver(tag, buffers[tag])
+
+    def _deliver(self, tag: bytes, buffer: bytearray) -> None:
+        """Pull whole game frames out of one player's buffer and hand them on."""
+        source = "host" if tag == ROLE_HOST else "joiner"
+        while len(buffer) >= protocol.HEADER_SIZE:
+            try:
+                length = protocol.read_length(bytes(buffer[: protocol.HEADER_SIZE]))
+            except ProtocolError as exc:
+                self._shutdown(f"The fight sent something unreadable: {exc}")
+                return
+            if len(buffer) < protocol.HEADER_SIZE + length:
+                return
+            body = bytes(buffer[protocol.HEADER_SIZE : protocol.HEADER_SIZE + length])
+            del buffer[: protocol.HEADER_SIZE + length]
+            try:
+                message = protocol.decode(body)
+            except ProtocolError as exc:
+                # One unreadable message from a fighter is not worth
+                # emptying the seat over; skip it and keep watching.
+                log.warning("Ignoring a ringside message: %s", exc)
+                continue
+            if message["type"] in ("ping", "pong"):
+                continue
+            message["source"] = source
+            try:
+                self._on_message(message)
+            except Exception:
+                log.exception("Ringside handler failed for %s.", message.get("type"))
 
     @staticmethod
     def _read_role(sock: socket.socket) -> bytes:

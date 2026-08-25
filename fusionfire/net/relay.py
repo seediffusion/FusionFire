@@ -59,14 +59,40 @@ the other player's problem, and the game's own frame checks protect them.
 ROOM_TOKEN_LENGTH = 16
 RELAY_DEFAULT_PORT = 6001
 
-#: How long a client has to send its room token before being dropped.
+#: How long a client has to send its opening before being dropped.
 TOKEN_TIMEOUT = 20.0
 #: How long the first player of a room waits for an opponent.
 ROOM_WAIT_TIMEOUT = 600.0
 #: A room full of strangers takes at most this many bytes to reject.
 ROLE_HOST = b"H"
 ROLE_JOINER = b"J"
+ROLE_SPECTATOR = b"S"
 ROLE_FULL = b"F"
+
+#: One byte of options follows the room token. Bit zero, set by whoever
+#: opens the room, is the only one defined: it says the room has a ringside.
+#: Everyone sends the byte and only the first arrival's is read, which keeps
+#: the opening a fixed length rather than something to be parsed.
+OPTIONS_LENGTH = 1
+OPTION_RINGSIDE = 0x01
+#: What a client sends before anything else: the token, then the options.
+OPENING_LENGTH = ROOM_TOKEN_LENGTH + OPTIONS_LENGTH
+
+#: Seats at the ringside. Three is a room's worth of hecklers and a bound on
+#: how far one match's traffic has to be copied.
+MAX_SEATS = 3
+
+#: A seat's stream is not a player's. Players get the other player's bytes
+#: unchanged, because a splice is all two people need; a seat is watching
+#: two people at once and would otherwise receive both of them shuffled
+#: together with no way to tell whose move was whose.
+#:
+#: So every chunk forwarded to a seat is tagged: one byte naming the player
+#: it came from, then four bytes of length, then the chunk. The relay still
+#: reads nothing -- chunk boundaries are wherever the socket happened to
+#: split, and reassembling them into messages is the seat's problem, exactly
+#: as it is a player's.
+SEAT_HEADER = "!cI"
 
 #: Bound on simultaneously open rooms, so a flood of distinct tokens cannot
 #: grow the table forever. Each room is one match, so this is plenty.

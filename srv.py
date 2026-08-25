@@ -88,6 +88,7 @@ import json
 import logging
 import os
 import socket
+import struct
 import sys
 import threading
 import time
@@ -104,14 +105,44 @@ log = logging.getLogger(__name__)
 ROOM_TOKEN_LENGTH = 16
 RELAY_DEFAULT_PORT = 6001
 
-#: How long a client has to send its room token before being dropped.
+#: How long a client has to send its opening before being dropped.
 TOKEN_TIMEOUT = 20.0
 #: How long the first player of a room waits for an opponent.
 ROOM_WAIT_TIMEOUT = 600.0
 #: A room full of strangers takes at most this many bytes to reject.
 ROLE_HOST = b"H"
 ROLE_JOINER = b"J"
+ROLE_SPECTATOR = b"S"
 ROLE_FULL = b"F"
+
+#: One byte of options follows the room token. Bit zero, set by whoever
+#: opens the room, is the only one defined: it says the room has a ringside.
+#: Everyone sends the byte and only the first arrival's is read, which keeps
+#: the opening a fixed length rather than something to be parsed.
+OPTIONS_LENGTH = 1
+OPTION_RINGSIDE = 0x01
+#: What a client sends before anything else: the token, then the options.
+OPENING_LENGTH = ROOM_TOKEN_LENGTH + OPTIONS_LENGTH
+
+#: Seats at the ringside. Three is a room's worth of hecklers and a bound on
+#: how far one match's traffic has to be copied.
+MAX_SEATS = 3
+
+#: A seat's stream is not a player's. Players get the other player's bytes
+#: unchanged, because a splice is all two people need; a seat is watching
+#: two people at once and would otherwise receive both of them shuffled
+#: together with no way to tell whose move was whose.
+#:
+#: So every chunk forwarded to a seat is tagged: one byte naming the player
+#: it came from, then four bytes of length, then the chunk. The relay still
+#: reads nothing -- chunk boundaries are wherever the socket happened to
+#: split, and reassembling them into messages is the seat's problem, exactly
+#: as it is a player's.
+SEAT_HEADER = "!cI"
+_SEAT_HEADER = struct.Struct(SEAT_HEADER)
+#: The game's own frame header, which the relay uses for exactly one thing:
+#: see :meth:`RelayServer._announce_seats`.
+_FRAME_HEADER = struct.Struct("!I")
 
 #: Bound on simultaneously open rooms, so a flood of distinct tokens cannot
 #: grow the table forever. Each room is one match, so this is plenty.
@@ -125,7 +156,7 @@ PUBLICATION_INTERVAL = 300.0
 
 
 class _Room:
-    """The two sockets of one match, waiting to be spliced together."""
+    """One match: two players, and up to three seats watching them."""
 
     def __init__(self, token: bytes) -> None:
         self.token = token
@@ -135,9 +166,14 @@ class _Room:
         self.host_ready = threading.Event()
         self.spliced = False
         self.alive = True
+        #: Set from the opening byte of whoever gets here first. Only they
+        #: decide whether their match can be watched; anyone arriving later
+        #: is answering a question that has already been settled.
+        self.ringside = False
+        self.seats: list[socket.socket] = []
 
-    def register(self, conn: socket.socket) -> bytes:
-        """Claim a socket. Returns the role byte, or ``ROLE_FULL``.
+    def register(self, conn: socket.socket, options: int = 0) -> bytes:
+        """Claim a place. Returns the role byte, or ``ROLE_FULL``.
 
         ``b""`` means the room died between being looked up and being
         claimed. The caller retries rather than dropping the client: a dead
@@ -149,12 +185,32 @@ class _Room:
                 return b""
             if self.host is None:
                 self.host = conn
+                self.ringside = bool(options & OPTION_RINGSIDE)
                 return ROLE_HOST
             if self.joiner is None:
                 self.joiner = conn
                 self.host_ready.set()
                 return ROLE_JOINER
+            if self.ringside and len(self.seats) < MAX_SEATS:
+                self.seats.append(conn)
+                return ROLE_SPECTATOR
             return ROLE_FULL
+
+    def leave_seat(self, conn: socket.socket) -> bool:
+        """Give a seat back. True if it was one of ours."""
+        with self.lock:
+            if conn in self.seats:
+                self.seats.remove(conn)
+                return True
+            return False
+
+    def audience(self) -> list[socket.socket]:
+        with self.lock:
+            return list(self.seats)
+
+    def seat_count(self) -> int:
+        with self.lock:
+            return len(self.seats)
 
     def release(self, conn: socket.socket) -> None:
         """Give back a place claimed by a joiner that never got going.
@@ -179,13 +235,14 @@ class _Room:
             return False
 
     def mark_done(self) -> bool:
-        """Close both sockets. True if this is the call that ends the room."""
+        """Close every socket in the room. True if this call ended it."""
         with self.lock:
             if not self.alive:
                 return False
             self.alive = False
-            sockets = (self.host, self.joiner)
+            sockets = (self.host, self.joiner, *self.seats)
             self.host = self.joiner = None
+            self.seats = []
         for sock in sockets:
             if sock is not None:
                 try:
@@ -289,12 +346,13 @@ class RelayServer:
         except OSError:
             pass
         try:
-            token = self._read_token(conn)
-            if token is None:
+            opening = self._read_opening(conn)
+            if opening is None:
                 log.info("Client %s left before its room token.", address[0])
                 conn.close()
                 return
-            room, role = self._join_room(token, conn)
+            token, options = opening[:ROOM_TOKEN_LENGTH], opening[ROOM_TOKEN_LENGTH]
+            room, role = self._join_room(token, conn, options)
             if room is None:
                 # Either the room table is full or every attempt to claim a
                 # room lost a race with a match ending. Neither is the
@@ -317,6 +375,10 @@ class RelayServer:
                 room.release(conn)
                 room.abandon(conn)
                 self._forget(room)
+                return
+
+            if role == ROLE_SPECTATOR:
+                self._take_a_seat(room, conn, address)
                 return
 
             if role == ROLE_HOST:
@@ -347,11 +409,12 @@ class RelayServer:
                 room.abandon(conn)
                 self._forget(room)
 
-    def _read_token(self, conn: socket.socket) -> bytes | None:
+    def _read_opening(self, conn: socket.socket) -> bytes | None:
+        """The room token and the one options byte that follows it."""
         conn.settimeout(TOKEN_TIMEOUT)
         buf = bytearray()
-        while len(buf) < ROOM_TOKEN_LENGTH:
-            chunk = conn.recv(ROOM_TOKEN_LENGTH - len(buf))
+        while len(buf) < OPENING_LENGTH:
+            chunk = conn.recv(OPENING_LENGTH - len(buf))
             if not chunk:
                 return None
             buf += chunk
@@ -424,20 +487,27 @@ class RelayServer:
                 sock.settimeout(None)
             except OSError:
                 pass
-        for src, dst in ((host, joiner), (joiner, host)):
+        for src, dst, tag in ((host, joiner, ROLE_HOST), (joiner, host, ROLE_JOINER)):
             thread = threading.Thread(
-                target=self._pump, args=(src, dst, room), name="relay-pump", daemon=True
+                target=self._pump,
+                args=(src, dst, room, tag),
+                name="relay-pump",
+                daemon=True,
             )
             thread.start()
         return True
 
-    def _pump(self, src: socket.socket, dst: socket.socket, room: _Room) -> None:
+    def _pump(
+        self, src: socket.socket, dst: socket.socket, room: _Room, tag: bytes
+    ) -> None:
         try:
             while True:
                 chunk = src.recv(4096)
                 if not chunk:
                     break
                 dst.sendall(chunk)
+                if room.ringside:
+                    self._to_the_seats(room, tag, chunk)
         except OSError:
             pass
         finally:
@@ -445,9 +515,81 @@ class RelayServer:
             self._forget(room)
 
     # ------------------------------------------------------------------
+    # The ringside
+    # ------------------------------------------------------------------
+    def _to_the_seats(self, room: _Room, tag: bytes, chunk: bytes) -> None:
+        """Copy one player's chunk to everyone watching, saying whose it is.
+
+        A seat that will not take it has gone; drop it and carry on. One
+        person closing their window is not a reason to interrupt a fight.
+        """
+        header = _SEAT_HEADER.pack(tag, len(chunk))
+        for seat in room.audience():
+            try:
+                seat.sendall(header + chunk)
+            except OSError:
+                self._empty_seat(room, seat)
+
+    def _take_a_seat(self, room: _Room, conn: socket.socket, address: tuple) -> None:
+        """Sit a spectator down and watch for them getting up again.
+
+        Their role byte has already gone out with everyone else's; from here
+        the seat is fed by the pumps. Nothing they send is ever forwarded.
+        The relay reads their socket only to notice the moment they close
+        it, so the seat can be freed for somebody else rather than held
+        until the match ends.
+        """
+        log.info("Seat taken by %s; %s watching.", address[0], room.seat_count())
+        self._announce_seats(room)
+        try:
+            conn.settimeout(None)
+            while room.alive:
+                if not conn.recv(4096):
+                    break
+        except OSError:
+            pass
+        finally:
+            self._empty_seat(room, conn)
+            log.info("Seat given up by %s.", address[0])
+
+    def _empty_seat(self, room: _Room, seat: socket.socket) -> None:
+        if room.leave_seat(seat):
+            self._announce_seats(room)
+        self._close(seat)
+
+    def _announce_seats(self, room: _Room) -> None:
+        """Tell the two players how many people are watching them.
+
+        The only frame the relay ever writes. It reads none: a player's
+        bytes are forwarded without being looked at, and a seat's are not
+        forwarded at all. This one exists because the fighters cannot
+        otherwise know an audience turned up, the ringside being one-way by
+        design -- and it carries a single number, which the game validates
+        against its schema on arrival like anything else off the wire.
+        """
+        body = b'{"type":"ringside","seats":%d}' % room.seat_count()
+        frame = _FRAME_HEADER.pack(len(body)) + body
+        with room.lock:
+            players = [sock for sock in (room.host, room.joiner) if sock is not None]
+        for player in players:
+            try:
+                player.sendall(frame)
+            except OSError:
+                pass
+
+    @staticmethod
+    def _close(sock: socket.socket) -> None:
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+    # ------------------------------------------------------------------
     # Room table
     # ------------------------------------------------------------------
-    def _join_room(self, token: bytes, conn: socket.socket) -> tuple[_Room | None, bytes]:
+    def _join_room(
+        self, token: bytes, conn: socket.socket, options: int = 0
+    ) -> tuple[_Room | None, bytes]:
         """Find or open this token's room and claim a place in it, atomically.
 
         Doing both under one lock is what keeps concurrent matches out of
@@ -476,7 +618,7 @@ class RelayServer:
                         return None, b""
                     room = _Room(token)
                     self._rooms[token] = room
-                role = room.register(conn)
+                role = room.register(conn, options)
                 if role:
                     return room, role
             return None, b""

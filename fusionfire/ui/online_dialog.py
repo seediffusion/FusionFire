@@ -84,6 +84,10 @@ class OnlineDialog(wx.Dialog):
         self.bind_host = ""
         self.bullets = settings.online_bullets
         self.restores = settings.online_restores
+        #: Whether to keep seats for onlookers. Only the first player into
+        #: the room is asked; by the time anyone else arrives the question
+        #: has been settled.
+        self.ringside = False
 
         panel = wx.Panel(self)
         outer = wx.BoxSizer(wx.VERTICAL)
@@ -221,8 +225,16 @@ class OnlineDialog(wx.Dialog):
         outer.Add(stack(restores_label, self.restores_field), 0, wx.ALL | wx.EXPAND, 10)
 
         supplies_hint = wx.StaticText(panel, label="The host's numbers apply to both players.")
+
+        self.ringside_box = wx.CheckBox(panel, label="Let people watch (&ringside)")
+        self.ringside_box.SetValue(settings.ringside)
+        self.ringside_hint = wx.StaticText(panel, label="")
+        self.ringside_hint.Wrap(430)
         supplies_hint.Wrap(430)
         outer.Add(supplies_hint, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+
+        outer.Add(self.ringside_box, 0, wx.LEFT | wx.RIGHT | wx.TOP, 10)
+        outer.Add(self.ringside_hint, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
 
         self.explain = wx.StaticText(panel, label="")
         self.explain.Wrap(430)
@@ -275,6 +287,19 @@ class OnlineDialog(wx.Dialog):
         if secure != self._last_security:
             self._last_security = secure
             self.pass_field.SetValue(generate_passphrase() if secure else casual_code())
+
+        # A seat cannot watch an encrypted fight: the handshake is between
+        # the two fighters, and there is no third place to stand.
+        can_watch = relay_mode and not secure
+        self.ringside_box.Enable(can_watch)
+        self.ringside_hint.SetLabel(
+            "Up to three people who type the same room code once you have "
+            "started can watch. They hear the fight and cannot join in."
+            if can_watch
+            else "Only on a relay server, and only without a passphrase: "
+            "an encrypted fight is between the two of you and nobody else."
+        )
+        self.ringside_hint.Wrap(430)
 
         need_secret = secure or relay_mode
         # ShowItems, not Show. wx.Sizer.Show takes (window|sizer|index), so
@@ -499,6 +524,8 @@ class OnlineDialog(wx.Dialog):
                 self.settings.last_host = self.host
         self.settings.online_bullets = self.bullets
         self.settings.online_restores = self.restores
+        self.ringside = bool(self.ringside_box.GetValue() and self.ringside_box.IsEnabled())
+        self.settings.ringside = self.ringside
         return True
 
     def _on_ok(self, event: wx.CommandEvent) -> None:

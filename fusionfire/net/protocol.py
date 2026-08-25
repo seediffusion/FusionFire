@@ -26,6 +26,7 @@ from typing import Any, Callable
 
 from ..config import sanitise_name
 from ..game import constants as K
+from .relay import MAX_SEATS as RELAY_MAX_SEATS
 
 PROTOCOL_VERSION = 1
 
@@ -103,6 +104,15 @@ def _optional(check: Callable[[Any], Any]) -> _Optional:
     return _Optional(check)
 
 
+def _flag(value: Any) -> int:
+    """A yes or a no, carried as 0 or 1 because JSON booleans are not needed."""
+    if isinstance(value, bool):
+        return int(value)
+    if value in (0, 1):
+        return int(value)
+    raise ProtocolError("Expected 0 or 1.")
+
+
 def _name(value: Any) -> str:
     if not isinstance(value, str):
         raise ProtocolError("Expected a string name.")
@@ -117,6 +127,14 @@ def _name(value: Any) -> str:
 #: modified code cannot report a bonus worth more than the game can produce.
 _MAX_BONUS_SWING = K.BONUS_NOTE_COUNT * 25
 _MAX_BONUS_COUNT = K.BONUS_NOTE_COUNT * 10
+#: How far below zero a fighter can be knocked. The last strike wins, so a
+#: scoreboard has to be able to say -42 rather than clamping it to nothing.
+_MAX_OVERKILL = 400
+#: Bounds for the numbers a scoreboard carries. Nothing legitimate comes
+#: near either, which is the point of having them.
+_MAX_POINTS = 10_000
+_MAX_STOCK = 999
+
 #: The widest damage any single message may claim, taken from the local
 #: rules. The bomb's share is a percentage, so its worst case is that
 #: percentage of a target still on full health.
@@ -145,6 +163,35 @@ SCHEMA: dict[str, dict[str, Callable[[Any], Any] | _Optional]] = {
         "restores": _optional(_bounded_int(0, K.MAX_ONLINE_SUPPLY)),
     },
     "ready": {},
+    # Written by the relay, not by a player: how many people are watching.
+    # It is the only frame the relay ever originates, and the fighters have
+    # no other way of knowing an audience turned up, the ringside being
+    # one-way by design. Bounded and validated on arrival like anything
+    # else that comes off a socket.
+    "ringside": {"seats": _bounded_int(0, RELAY_MAX_SEATS)},
+    # The whole fight in one message, sent by the host when a seat is taken.
+    # Somebody sitting down ten minutes in has missed every strike that got
+    # the two fighters to where they are, and a scoreboard that starts blank
+    # would be a scoreboard that lies until the next hit lands.
+    "state": {
+        "host_name": _name,
+        "host_gender": _enum("male", "female"),
+        "host_health": _bounded_int(-_MAX_OVERKILL, K.MAX_HEALTH),
+        "host_points": _bounded_int(0, _MAX_POINTS),
+        "host_bullets": _bounded_int(-1, _MAX_STOCK),
+        "host_restores": _bounded_int(-1, _MAX_STOCK),
+        "host_bombs": _bounded_int(0, _MAX_STOCK),
+        "host_loaded": _flag,
+        "join_name": _name,
+        "join_gender": _enum("male", "female"),
+        "join_health": _bounded_int(-_MAX_OVERKILL, K.MAX_HEALTH),
+        "join_points": _bounded_int(0, _MAX_POINTS),
+        "join_bullets": _bounded_int(-1, _MAX_STOCK),
+        "join_restores": _bounded_int(-1, _MAX_STOCK),
+        "join_bombs": _bounded_int(0, _MAX_STOCK),
+        "join_loaded": _flag,
+        "turn": _enum("host", "joiner"),
+    },
     # The host opens a bonus round on both ends at once and says how long it
     # runs, so the two players are answering the same question for the same
     # length of time.

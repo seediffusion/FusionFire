@@ -140,6 +140,9 @@ class Settings:
     #: has been answered. See :meth:`fusionfire.game.engine.Engine.apply_match_settings`.
     online_bullets: int = 10
     online_restores: int = 10
+    #: Whether to keep ringside seats when starting an online fight. Off by
+    #: default: a fight nobody asked to have watched should not be.
+    ringside: bool = False
 
     # Updates
     #: Ask GitHub at startup whether a newer release exists. On by default,
@@ -175,6 +178,7 @@ class Settings:
         self.gamepad_enabled = bool(self.gamepad_enabled)
         self.gamepad_vibration = bool(self.gamepad_vibration)
         self.check_for_updates = bool(self.check_for_updates)
+        self.ringside = bool(self.ringside)
 
         # Through _as_token first: a hand-edited file can hold a list or a
         # dict here, and an unhashable value would take the membership test
