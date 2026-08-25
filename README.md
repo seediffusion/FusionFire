@@ -64,12 +64,11 @@ There is also `uv run build.py --onefile`, which produces a single executable. I
 
 ## Playing
 
-The first time you launch, the game asks who you are and your date of birth. This is entirely optional and stored locally on your own machine; nothing is sent anywhere. After that it is just a matter of choosing which computer you want to fight.
+The first time you start a fight, the game asks who you are and your date of birth. This is entirely optional and stored locally on your own machine; nothing is sent anywhere. After that it is just a matter of choosing which computer you want to fight.
 
 1. Choose Play offline from the main menu.
 2. Pick a difficulty from the list and press Enter.
 3. Listen to the machine boot up. Savour it, because it is the last calm sound you will hear before one of you is blown to pieces.
-4. Start hitting the number row.
 
 ### Keyboard shortcuts
 
@@ -88,10 +87,10 @@ The first time you launch, the game asks who you are and your date of birth. Thi
 | `R` | Repeat the last message |
 | `C` | Open the cheat prompt |
 | `Left Arrow` and `Right Arrow` | Move between notes in the bonus round |
-| `Space` | Mark a note in the bonus, or silence the screams during a match |
+| `Space` | Mark a note in the bonus round, or silence the screams during a match |
 | `Enter` | Turn the background score on or off |
-| `Home` and `End` | Sound volume up and down |
-| `Page Up` and `Page Down` | Music volume up and down |
+| `Home` and `End` | Turn sound effect volume up and down |
+| `Page Up` and `Page Down` | Turn music volume up and down |
 | `Backspace` | Turn statistics recording on or off |
 | `Escape` | Leave the match |
 | `F1` | The full list, in the game |
@@ -110,8 +109,6 @@ You and your opponent each score a point for every attack that lands, and nothin
 The gun and the whip are absolute value attacks. The bomb is percentage based, so a 50% bomb takes 30 health off an opponent sitting on 60, but only 5 off the same opponent sitting on 10. Bombs soften people up; they do not finish them.
 
 The gun has to be loaded before it will fire, but loading is free and does not cost you your turn. Reloading is the setup for a move, not the move itself. The machine reloads for free as well and still attacks in the same turn, so the courtesy runs both ways.
-
-An action you cannot take just says so. Loading a gun that is already loaded, firing on an empty chamber, healing at full health: each answers with a sentence telling you what is wrong, and no buzzer in front of it.
 
 ### Difficulty
 
@@ -138,17 +135,17 @@ Every so often the machine hides items in an octave of thirteen notes. Some help
 
 1. Use `Left Arrow` and `Right Arrow` to move between the notes. The pitch rises left to right, so you can hear where you are without counting.
 2. Press `Space` to mark a note. Mark as many as you dare.
-3. When the horn goes, everything you marked is applied and read out.
+3. When the horn sounds, everything you marked is applied and read out.
 
 The round is three seconds long by default, which is not enough time to think and is not meant to be. If that is not your idea of fair, Settings → Game will stretch it to as much as thirty seconds.
 
 ### Cheat codes
 
-Score thirty points in a single match and the cheat codes unlock permanently. Fusion Fire writes them to a text file and tells you where it put it.
+Score thirty points in a single match and the cheat codes unlock permanently. Fusion Fire writes them to a text file in %appdata%\FusionFire\cheats.txt.
 
 The prompt is invisible, exactly as it was in 2008. Press `C` during a match; a short bang tells you it is open, every character you type is spoken back by a recorded voice, Enter submits and Escape backs out. Type a quantity, a space, then the code, E.G. `15 bullets`.
 
-Cheats do not work on Impossible, and they do not work online, where the other side is a person rather than a machine.
+Cheats do not work on Impossible, so if you think '60 machinedamage' will get you the upper hand, it won't. Even if it did, 40 is lower than 75, so the computer will just restore its health anyway.
 
 ## Controllers
 
@@ -156,17 +153,19 @@ Any pad Windows recognises works, and can be plugged in mid-match. The weapons a
 
 | Control | Action |
 |---|---|
-| Right and left trigger | Shoot, lash |
-| X and Y | Load, heal |
-| B and A | Laugh, taunt |
-| Left and right shoulder | Bomb, power weapon |
-| Back and Start | Opponent status, your status |
-| Stick clicks | Laugh, audio comment |
+| Right trigger | Shoot |
+| Left trigger | Lash |
+| X | Load gun |
+| Y | Restore health |
+| B | Laugh at your opponent |
+| A | Taunt your opponent | 
+| Left bumper | Throw a bomb |
+| Right Bumper | Fire the power weapon or send a message online |
+| Start | See your health, points, ammo and health restores |
+| Back | See your opponent's health, points, ammo and health restores |
 | D-pad and left stick | Move in the bonus round |
 
-The taunt is one button and an immediate insult, picked for you from the same recordings the audio comment dialog lists. It is for the beat between your turn ending and theirs starting, when there is no time to choose.
-
-Away from a match the pad drives the interface instead, so you can get from the menu to the rematch prompt without touching the keyboard.
+The game's menus can also be navigated with a controller.
 
 | Control | At a menu |
 |---|---|
@@ -179,28 +178,60 @@ Assignments are rebindable in Settings, and the stick dead zone is adjustable fo
 
 ### Vibration
 
-A pad that can vibrate does when something lands on you: a short flick for a lash, a heavier and longer one for a gunshot, so you can tell the two apart by feel before the status line has said which it was. Bombs and the power weapon are heavier still.
-
-Only what lands on *you* is felt. There is an off switch in Settings → Controller.
+Fusion Fire also supports controller haptics, so you can feel your opponent ripping you a new one as well as hear it. The whip is a soft pulse, the gun is a stronger vibration, and the bomb is a long rumble.
 
 ## Playing online
 
-Two people, one match, over the internet. You can go through a relay server (recommended) or connect directly, and either way you can play with or without encryption.
+You can fight your friend or foe over a LAN or the internet. The recommended way to fight over the internet is with a relay server, though you can also do peer to peer fights; this was your only option in the original game.
+There are two security options to choose from, quick play and encrypted mode.
 
 ### Quick play
 
-The default. No passphrase at all.
+No passphrase, no encryption, and nothing to remember but a room code. This is the quickest way to get two people fighting.
+
+One of you picks the server and the room code and sends both to the other. Whoever presses OK first is the host and moves first, so if you want to go first, do not dawdle.
+
+#### If you are starting the fight
 
 1. Choose Play online from the main menu.
 2. Leave Connection type on Relay server and Connection security on Quick play.
-3. The dialog fills in a short room code for you. Read it out to the other player or paste it to them.
-4. Both of you press OK. The first one in is the host and moves first.
+3. The Room code box is filled in for you. Keep it, or clear it and type something the two of you will actually remember.
+4. Set Bullets each and Restores each. If you get in first, these are the numbers you both play with.
+5. Press Copy code and send the code, along with the address of the relay server you are about to use, to the other player.
+6. Type that server's address into the Relay server box and press OK, or press Get a list of publicized servers and choose one from the list.
+7. Fusion Fire tells you it is waiting, and how long it will wait.
 
-The room code is an identifier, not a secret, so share it freely. Anyone who knows it can join, and the match is not encrypted. That is exactly the "open socket, first player in" behaviour of the original, minus the guesswork about which room you are in.
+Leave the server until last. Choosing one from the publicized list connects you there and then, so anything you have not filled in yet goes in as it stands.
+
+#### If you are joining the fight
+
+1. Choose Play online from the main menu.
+2. Leave Connection type on Relay server and Connection security on Quick play.
+3. Clear the Room code box and type the code they gave you. It has to match exactly.
+4. Ignore Match supplies. Whoever gets in first is the host, and their numbers are the ones both of you play with.
+5. Type the relay server address they gave you and press OK, or pick that same server from the publicized list.
+
+The fight starts the moment you are both in. If Fusion Fire tells you two players are already using that room code, somebody else is mid-fight on it. Agree a different one and go again.
+
 
 ### Encrypted
 
-Set Connection security to Encrypted and both players type the same passphrase of twelve characters or more. The New passphrase button will think one up if you would rather not.
+Same as quick play, but a shared passphrase takes the place of the room code and the whole fight is encrypted. Set Connection security to Encrypted and the dialog swaps the Room code box for a Shared passphrase box.
+
+#### If you are starting the fight
+
+1. Follow the quick play steps, but set Connection security to Encrypted.
+2. Press New passphrase to have one thought up for you, or type your own of twelve characters or more.
+3. Press Copy passphrase and get it to the other player over something you already trust. A phone call, or whatever you would send a bank card photo over.
+4. Press OK and wait for them.
+
+#### If you are joining the fight
+
+1. Follow the quick play steps, but set Connection security to Encrypted.
+2. Type the passphrase they gave you into the Shared passphrase box, exactly as they gave it to you.
+3. Press OK.
+
+Get one character of it wrong and you will not join a different room, you simply will not connect, and Fusion Fire will tell you to check that you both typed the same thing.
 
 The passphrase is not a formality. It encrypts the match with TLS 1.3 and authenticates both ends, so somebody who does not have it cannot connect at all. It is stretched with scrypt first, so guessing at it costs real work rather than a hash.
 
@@ -218,13 +249,28 @@ One relay carries as many matches at once as people want to start on it, and the
 
 ### Direct peer to peer
 
-One player hosts and the other joins.
+No relay in the middle. One of you listens and the other dials them, which is how the original did it. On a LAN this just works; over the internet the host needs a forwarded port.
 
-1. The host chooses Direct peer to peer, then Host the game.
-2. The host picks a port and reads their address out to the other player. The Copy address button puts it on the clipboard.
-3. The other player chooses Join someone else's game, types that address and port, and presses OK.
+Here the roles are a choice rather than a race: whoever picks Host the game is the host and moves first.
 
-Hosting asks for a port and nothing else, because you are the one being dialled. Your machine's addresses are a list you can arrow through; it listens on all of them unless you pick one, which is only worth doing on a machine where it matters, such as one with a VPN you would rather nobody arrived over.
+#### If you are hosting
+
+1. Choose Play online from the main menu.
+2. Set Connection type to Direct peer to peer, and leave Your role on Host the game and wait for an opponent.
+3. Pick a port, or leave it at 6000.
+4. Arrow through the Address to listen on list. Leave it on All addresses unless you have a reason not to.
+5. Press Copy address and send that address and the port to the other player.
+6. Set Bullets each and Restores each. You are the host, so these are the numbers you both play with.
+7. Press OK. Fusion Fire tells you which address it is waiting on.
+
+#### If you are joining
+
+1. Choose Play online from the main menu.
+2. Set Connection type to Direct peer to peer, and set Your role to Join someone else's game.
+3. Type their address into Opponent's address, and their port into Port.
+4. Press OK.
+
+Picking one address instead of all of them is only worth doing on a machine where it matters, such as one with a VPN you would rather nobody arrived over.
 
 Over the internet you need your public address and a forwarded port. That is not in the list, because your router knows it and your computer does not.
 
