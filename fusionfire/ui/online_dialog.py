@@ -67,9 +67,12 @@ ALL_ADDRESSES = "All addresses (recommended)"
 class OnlineDialog(wx.Dialog):
     """Choose how to connect, and collect the connection details."""
 
-    def __init__(self, parent: wx.Window, settings) -> None:
+    def __init__(self, parent: wx.Window, settings, presenter=None) -> None:
         super().__init__(parent, title="Play online", style=wx.DEFAULT_DIALOG_STYLE)
         self.settings = settings
+        #: Optional, so the dialog can still be built without an application
+        #: behind it. Used only to confirm a copy out loud.
+        self.presenter = presenter
         self.connection = "relay"
         self.hosting = True
         self.host = ""
@@ -309,33 +312,54 @@ class OnlineDialog(wx.Dialog):
         # What is on screen has changed size, not just contents.
         self.Fit()
 
+    def _confirm(self, text: str) -> None:
+        """Say that something happened, rather than putting it in a box.
+
+        A copy is a keypress, not an event. Acknowledging one with a modal
+        cost a focus change, a reading of the whole box, and a second
+        keypress to get rid of it -- all to be told that the thing you just
+        asked for had happened. Saying it leaves the focus where it was.
+        """
+        if self.presenter is not None:
+            self.presenter.report(text)
+
+    def _to_clipboard(self, text: str) -> bool:
+        if not text or not wx.TheClipboard.Open():
+            return False
+        try:
+            wx.TheClipboard.SetData(wx.TextDataObject(text))
+            wx.TheClipboard.Flush()
+        finally:
+            wx.TheClipboard.Close()
+        return True
+
     def _copy_passphrase(self, event: wx.CommandEvent) -> None:
-        if wx.TheClipboard.Open():
-            try:
-                wx.TheClipboard.SetData(wx.TextDataObject(self.pass_field.GetValue()))
-                wx.TheClipboard.Flush()
-            finally:
-                wx.TheClipboard.Close()
-            message(
-                self,
-                f"{'Passphrase' if self.secure else 'Room code'} copied to the clipboard.",
-                "Copied",
+        if self._to_clipboard(self.pass_field.GetValue()):
+            self._confirm(
+                f"{'Passphrase' if self._encrypted else 'Room code'} copied."
             )
 
     def _copy_address(self, event: wx.CommandEvent) -> None:
         address = self._shareable_address()
-        if not address:
-            return
-        if wx.TheClipboard.Open():
-            try:
-                wx.TheClipboard.SetData(wx.TextDataObject(address))
-                wx.TheClipboard.Flush()
-            finally:
-                wx.TheClipboard.Close()
-            message(self, f"{address} copied to the clipboard.", "Copied")
+        if self._to_clipboard(address):
+            self._confirm(f"{address} copied.")
+
+    @property
+    def _encrypted(self) -> bool:
+        """Whether Encrypted is chosen right now.
+
+        Not ``self.secure``, which is only written when the dialog is
+        accepted -- so a button pressed before that read whatever the dialog
+        happened to open on. That is how New passphrase came to hand out an
+        eight-character room code in encrypted mode, which OK then refused
+        for being under twelve.
+        """
+        return self.security_choice.GetSelection() == 1
 
     def _new_passphrase(self, event: wx.CommandEvent) -> None:
-        self.pass_field.SetValue(generate_passphrase() if self.secure else casual_code())
+        self.pass_field.SetValue(
+            generate_passphrase() if self._encrypted else casual_code()
+        )
         self.pass_field.SetFocus()
 
     # ------------------------------------------------------------------

@@ -538,7 +538,7 @@ class AppContext:
         from .net.session import HostSession, JoinSession, RelaySession
         from .ui.online_dialog import OnlineDialog, WaitingDialog
 
-        dialog = OnlineDialog(self.frame, self.settings)
+        dialog = OnlineDialog(self.frame, self.settings, self.presenter)
         try:
             if dialog.ShowModal() != wx.ID_OK:
                 return

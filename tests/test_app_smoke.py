@@ -2830,8 +2830,8 @@ def test_the_session_is_given_somewhere_to_report(app_ctx, monkeypatch):
         def close(self, reason=""):
             pass
 
-    def build(frame, settings):
-        dialog = real_dialog(frame, settings)
+    def build(frame, settings, presenter=None):
+        dialog = real_dialog(frame, settings, presenter)
         dialog.relay_field.SetValue("relay.example.org")
         assert dialog._apply() is True
         monkeypatch.setattr(dialog, "ShowModal", lambda: wx.ID_OK)
@@ -2962,6 +2962,119 @@ def test_no_line_in_the_dialog_is_a_paragraph(app_ctx):
                         )
                 finally:
                     dialog.Destroy()
+
+
+# ----------------------------------------------------------------------
+# Copying the code, the passphrase and the address
+# ----------------------------------------------------------------------
+def test_copying_puts_nothing_on_screen(app_ctx, monkeypatch):
+    """It used to answer with a modal, which costs a focus change, a reading
+    of the whole box and a keypress to get rid of it -- all to be told that
+    the thing you just asked for happened."""
+    from fusionfire.ui import online_dialog
+
+    boxes = []
+    monkeypatch.setattr(online_dialog, "message", lambda *a, **k: boxes.append(a))
+
+    dialog = online_dialog.OnlineDialog(app_ctx.frame, app_ctx.settings)
+    try:
+        dialog._copy_passphrase(None)
+        dialog.connection_choice.SetSelection(1)
+        dialog.mode.SetSelection(0)
+        dialog._sync()
+        dialog._copy_address(None)
+    finally:
+        dialog.Destroy()
+
+    assert boxes == [], f"a copy opened a message box: {boxes}"
+
+
+def test_copying_says_so(app_ctx):
+    """Silence would leave a player with no way of knowing it worked."""
+    from fusionfire.ui.online_dialog import OnlineDialog
+
+    heard = _SpeechLog()
+    app_ctx.presenter.speech = heard
+
+    dialog = OnlineDialog(app_ctx.frame, app_ctx.settings, app_ctx.presenter)
+    try:
+        dialog._copy_passphrase(None)
+    finally:
+        dialog.Destroy()
+
+    assert heard.spoken, "copying said nothing at all"
+    assert "copied" in heard.spoken[-1].lower(), heard.spoken
+
+
+def test_a_dialog_with_nobody_to_speak_to_still_copies(app_ctx):
+    """The presenter is optional, and the copy is the part that matters."""
+    from fusionfire.ui.online_dialog import OnlineDialog
+
+    dialog = OnlineDialog(app_ctx.frame, app_ctx.settings)
+    try:
+        dialog._copy_passphrase(None)  # must not raise
+    finally:
+        dialog.Destroy()
+
+
+def test_the_copy_names_what_it_copied(app_ctx):
+    """Room code or passphrase, decided by what is selected right now.
+
+    ``self.secure`` is only written when the dialog is accepted, so reading
+    it here called a passphrase a room code for anyone who had switched
+    modes and not yet pressed OK.
+    """
+    from fusionfire.ui.online_dialog import OnlineDialog
+
+    heard = _SpeechLog()
+    app_ctx.presenter.speech = heard
+
+    dialog = OnlineDialog(app_ctx.frame, app_ctx.settings, app_ctx.presenter)
+    try:
+        dialog._copy_passphrase(None)
+        assert "room code" in heard.spoken[-1].lower(), heard.spoken
+
+        dialog.security_choice.SetSelection(1)
+        dialog._sync()
+        dialog._copy_passphrase(None)
+        assert "passphrase" in heard.spoken[-1].lower(), heard.spoken
+    finally:
+        dialog.Destroy()
+
+
+def test_new_passphrase_gives_a_passphrase_not_a_room_code(app_ctx, monkeypatch):
+    """The same stale flag handed out an eight-character room code in
+    encrypted mode, which OK then refused for being under twelve."""
+    from fusionfire.ui import online_dialog
+
+    dialog = online_dialog.OnlineDialog(app_ctx.frame, app_ctx.settings)
+    try:
+        dialog.security_choice.SetSelection(1)
+        dialog._sync()
+        dialog._new_passphrase(None)
+
+        typed = dialog.pass_field.GetValue()
+        assert len(typed) >= online_dialog.MIN_PASSPHRASE_LENGTH, (
+            f"New passphrase produced {typed!r}, which OK would reject"
+        )
+
+        # And it is accepted, which is the thing the player actually hits.
+        dialog.relay_field.SetValue("relay.example.org")
+        assert dialog._apply() is True
+    finally:
+        dialog.Destroy()
+
+
+def test_new_code_still_gives_a_room_code(app_ctx):
+    """The fix must not swing the other way."""
+    from fusionfire.ui.online_dialog import OnlineDialog
+
+    dialog = OnlineDialog(app_ctx.frame, app_ctx.settings)
+    try:
+        dialog._new_passphrase(None)
+        assert 0 < len(dialog.pass_field.GetValue()) < 20
+    finally:
+        dialog.Destroy()
 
 
 # ----------------------------------------------------------------------
@@ -3147,8 +3260,8 @@ def test_the_dialogs_chosen_address_reaches_the_socket(app_ctx, monkeypatch):
         def close(self, reason=""):
             pass
 
-    def build(frame, settings):
-        dialog = real_dialog(frame, settings)
+    def build(frame, settings, presenter=None):
+        dialog = real_dialog(frame, settings, presenter)
         dialog.connection_choice.SetSelection(1)  # direct peer to peer
         dialog.mode.SetSelection(0)               # host and wait
         dialog._sync()
@@ -3191,8 +3304,8 @@ def test_a_host_is_told_the_address_to_read_out(app_ctx, monkeypatch):
         def close(self, reason=""):
             pass
 
-    def build(frame, settings):
-        dialog = real_dialog(frame, settings)
+    def build(frame, settings, presenter=None):
+        dialog = real_dialog(frame, settings, presenter)
         dialog.connection_choice.SetSelection(1)
         dialog.mode.SetSelection(0)
         dialog._sync()
