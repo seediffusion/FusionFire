@@ -60,7 +60,7 @@ uv run build.py
 
 The output lands in the `dist` folder.
 
-There is also `uv run build.py --onefile`, which produces a single executable. It is not recommended: the entire program has to be extracted to a temp folder on every launch, so what you get is essentially a self-extracting archive with delusions of grandeur.
+There is also `uv run build.py --onefile`, which produces a single executable. It is not recommended: the entire program has to be extracted to a temp folder on every launch, so what you get is essentially a self-extracting archive with delusions of grandeur. Furthermore, PyInstaller is a lot tidier than it used to be; it doesn't dump everything into the output folder. A bare-bones PyInstaller dist folder now contains two items, an internal subfolder of libraries and your program's main executable.
 
 ## Playing
 
@@ -77,8 +77,8 @@ The first time you start a fight, the game asks who you are and your date of bir
 | `1` | Fire gun |
 | `2` | Crack whip |
 | `3` | Load gun |
-| `4` | Check your status |
-| `5` | Check your opponent's status |
+| `4` | Check your health, points, bullets and health restores |
+| `5` | Check your opponent's health, points, bullets and health restores |
 | `6` | Fire the power weapon, or send a message online |
 | `7` | Restore health |
 | `8` | Play an audio taunt |
@@ -107,6 +107,8 @@ You and your opponent each score a point for every attack that lands, and nothin
 | Power weapon | 15 to 50 health |
 
 The gun and the whip are absolute value attacks. The bomb is percentage based, so a 50% bomb takes 30 health off an opponent sitting on 60, but only 5 off the same opponent sitting on 10. Bombs soften people up; they do not finish them.
+
+You start a fight with no bombs. Bombs are given to you either in bonus rounds or via cheat codes if you have them unlocked.
 
 The gun has to be loaded before it will fire, but loading is free and does not cost you your turn. Reloading is the setup for a move, not the move itself. The machine reloads for free as well and still attacks in the same turn, so the courtesy runs both ways.
 
@@ -183,7 +185,7 @@ Fusion Fire also supports controller haptics, so you can feel your opponent ripp
 ## Playing online
 
 You can fight your friend or foe over a LAN or the internet. The recommended way to fight over the internet is with a relay server, though you can also do peer to peer fights; this was your only option in the original game.
-There are two security options to choose from, quick play and encrypted mode.
+Whether you use a relay server or fight peer to peer, there are two security options to choose from, quick play and encrypted mode.
 
 ### Quick play
 
@@ -204,7 +206,7 @@ One of you picks the server and the room code and sends both to the other. Whoev
 
 1. Choose Play online from the main menu.
 2. Leave Connection type on Relay server and Connection security on Quick play.
-3. Type the room code given to you by the host in the room code fox.
+3. Type the room code given to you by the host in the room code box.
 4. Ignore Match supplies. Whoever gets in first is the host, and their numbers are the ones both of you play with.
 5. Connect to the server via the publicized servers list (Alt + L) or type the details of a private server in the relay server and port fields.
 
@@ -251,7 +253,7 @@ Here the roles are a choice rather than a race: whoever picks Host the game is t
 
 1. Choose Play online from the main menu.
 2. Set Connection type to Direct peer to peer, and set Your role to Join someone else's game.
-3. Type their address into Opponent's address, and their port into Port.
+3. Type the host's address and port into the respective fields.
 4. Press OK.
 
 ### Match supplies
@@ -264,7 +266,7 @@ The bonus round happens online too. Both players get one at the same moment, eac
 
 ### The ringside
 
-Up to three people can pull up a chair and watch the two of you knock lumps off each other. Tick "Let people watch (ringside)" before you start and anyone who types your room code once the fight is under way gets a seat instead of being turned away.
+Up to three people can pull up a chair and watch the two of you knock ten bells out of each other. Tick "Let people watch (ringside)" before you start and anyone who types your room code once the fight is under way gets a seat instead of being turned away.
 
 #### If you are starting the fight
 
@@ -279,17 +281,11 @@ You are told when somebody sits down and when a seat empties, so you always know
 1. Choose Play online from the main menu.
 2. Leave Connection type on Relay server and Connection security on Quick play.
 3. Type the same room code the fighters are using.
-4. Type the relay server address and press OK.
+4. Type the relay server address and press OK, or choose one from the publicized servers list.
 
 If the fight has not started yet you will be the opponent, not a spectator. Seats only exist once both fighters are in.
 
-You hear the fight, not a report of it. The machine boots up, the hum runs under everything, the score follows whoever is losing, and every gunshot, lash, bomb, reload and cry of pain lands in your ears the way it lands in theirs. The taunts and the laughing carry too, and so do both fighters' health alarms; you sit through the bonus round with them, clock ticking and horn and all.
-
-On top of that you get the commentary, called by name since neither of them is you: "Ada Lovelace shoots and hits for 12. Blue Screen is on 29." Press `4` and `5` for each fighter's status, `R` to repeat the last line, and Escape to leave. Everything that would throw a punch tells you that you are watching.
-
 Sit down ten minutes in and you are caught up: the host posts the scoreboard the moment your seat is taken, so you get both fighters' health, points, ammunition and whose turn it is before the next blow lands.
-
-The ringside is one way. Nothing you do in a seat reaches the fight, which is why the fighters can be told there is an audience without having to worry about it.
 
 #### What the ringside will not do
 
