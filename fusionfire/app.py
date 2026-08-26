@@ -131,6 +131,8 @@ class AppContext:
             self.settings.online_bullets,
             self.settings.online_restores,
         )
+        #: The looping clock of a bonus round a seat is sitting through.
+        self._ringside_clock = None
         #: How many are watching, so the fighters are only told when it
         #: changes rather than every time the relay repeats itself.
         self._seats = 0
@@ -925,8 +927,46 @@ class AppContext:
                     message.get("reason") or f"{who.name} left the fight."
                 )
                 self.leave_match()
+        elif kind == "bonus_start":
+            self._watch_bonus(int(message["seconds"]))
+        elif kind == "bonus":
+            self.presenter.render(self.engine.apply_peer_bonus(message, side))
         elif kind in ("strike", "heal", "load"):
             self._apply_move(side, message)
+
+    def _watch_bonus(self, seconds: int) -> None:
+        """Sit through the bonus round with them.
+
+        A seat is not picking anything, so there is no dialog and no notes.
+        What there is, and what was missing, is the sound of it: the fighters
+        go quiet for ten seconds while they choose, and without the clock and
+        the horn a watcher is left wondering whether the fight has stopped.
+        """
+        from .game import constants as K
+
+        seconds = max(1, min(K.MAX_BONUS_SECONDS, seconds))
+        self.presenter.report(
+            f"{self.engine.opponent.name} has hidden items in "
+            f"{K.BONUS_NOTE_COUNT} notes. Both fighters are picking."
+            if self.engine is not None
+            else "The bonus round has started."
+        )
+        self._ringside_clock = self.audio.play("itemclock", looping=True, volume=0.55)
+        self._later_by(seconds, self._ringside_horn)
+
+    def _ringside_horn(self) -> None:
+        """Time is up on a bonus round we watched rather than played."""
+        clock, self._ringside_clock = self._ringside_clock, None
+        if clock is not None:
+            try:
+                clock.stop()
+            except Exception:
+                log.debug("The ringside clock had already stopped.")
+        self.audio.play("itemtimeout")
+
+    @staticmethod
+    def _later_by(seconds: float, callback) -> None:
+        wx.CallLater(int(seconds * 1000), callback)
 
     def _ringside_hello(self, source: str, hello: dict) -> None:
         """One of the fighters introduced themselves. Wait for both."""

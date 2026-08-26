@@ -283,7 +283,9 @@ You are told when somebody sits down and when a seat empties, so you always know
 
 If the fight has not started yet you will be the opponent, not a spectator. Seats only exist once both fighters are in.
 
-From a seat you hear the whole fight called by name, since neither of them is you: "Ada Lovelace shoots and hits for 12. Blue Screen is on 29." Press `4` and `5` for each fighter's status, `R` to repeat the last line, and Escape to leave. Everything that would throw a punch tells you that you are watching.
+You hear the fight, not a report of it. The machine boots up, the hum runs under everything, the score follows whoever is losing, and every gunshot, lash, bomb, reload and cry of pain lands in your ears the way it lands in theirs. The taunts and the laughing carry too, and so do both fighters' health alarms; you sit through the bonus round with them, clock ticking and horn and all.
+
+On top of that you get the commentary, called by name since neither of them is you: "Ada Lovelace shoots and hits for 12. Blue Screen is on 29." Press `4` and `5` for each fighter's status, `R` to repeat the last line, and Escape to leave. Everything that would throw a punch tells you that you are watching.
 
 Sit down ten minutes in and you are caught up: the host posts the scoreboard the moment your seat is taken, so you get both fighters' health, points, ammunition and whose turn it is before the next blow lands.
 

@@ -754,9 +754,15 @@ class Engine:
         return singular if self._first_person(side) else third_person
 
     def _warn_low(self, victim: Combatant, side: Side) -> list[Event]:
-        """Low-health cues, once per threshold crossed."""
+        """Low-health cues, once per threshold crossed.
+
+        A fighter hears them for the other one: their own health is already
+        the loudest thing in their ears. At a ringside both fighters get
+        them, because a health alarm going off is half of what tells you a
+        fight is nearly over.
+        """
         out: list[Event] = []
-        if side is not Side.OPPONENT or self.spectating:
+        if side is not Side.OPPONENT and not self.spectating:
             return out
         from .events import PlaySound
 
@@ -842,13 +848,14 @@ class Engine:
 
         if self.spectating:
             winner, loser = self._sides(self.winner)
-            log.sound("computerdie")
+            # Whoever went down, not whoever is nearer the microphone.
+            log.sound("userdie" if self.winner is Side.OPPONENT else "computerdie")
             log.add(PlayMusic(f"win{suffix}", looping=False))
             log.say(
                 f"{loser.name} is down on {loser.health}. {winner.name} wins! "
                 f"Final score: {self.player.name} {self.player.points}, "
                 f"{self.opponent.name} {self.opponent.points}.",
-                after="computerdie",
+                after="userdie" if self.winner is Side.OPPONENT else "computerdie",
             )
             reason = f"{loser.name} reached {loser.health} health."
         elif self.winner is Side.PLAYER:
@@ -933,33 +940,39 @@ class Engine:
             effect.apply(self.player, self.opponent, self.difficulty)
         return self._settle_bonus(log, result.summary)
 
-    def apply_peer_bonus(self, message: dict) -> list[Event]:
-        """Fold the other player's bonus round into this end of the match.
+    def apply_peer_bonus(
+        self, message: dict, sender: Side = Side.OPPONENT
+    ) -> list[Event]:
+        """Fold somebody else's bonus round into this end of the match.
 
         Their notes were their own and this end never saw them, so what
         arrives is the arithmetic rather than the effects: what their notes
-        did to them, which lands on our ``opponent``, and what their notes
-        did to us, which lands on our ``player``. Everything has already been
-        bounded by the schema, and is clamped again here -- a peer running
-        modified code still cannot heal itself past full or drive us negative
-        by more than the notes could.
+        did to them, and what their notes did to the other fighter. Both
+        have already been bounded by the schema, and are clamped again here
+        -- a peer running modified code still cannot heal itself past full or
+        drive anyone negative by more than the notes could.
+
+        ``sender`` is whose round it was. A fighter only ever gets these from
+        their opponent, which is the default; a ringside seat gets them from
+        both and has to say which.
         """
         log = EventLog()
         self.rounds_since_bonus = 0
+        theirs, ours = self._sides(sender)
 
-        self.opponent.health += int(message.get("health", 0))
-        self.opponent.points = max(0, self.opponent.points + int(message.get("points", 0)))
-        self.opponent.bullets = max(0, self.opponent.bullets + int(message.get("bullets", 0)))
-        self.opponent.restores = max(0, self.opponent.restores + int(message.get("restores", 0)))
-        self.opponent.bombs = max(0, self.opponent.bombs + int(message.get("bombs", 0)))
+        theirs.health += int(message.get("health", 0))
+        theirs.points = max(0, theirs.points + int(message.get("points", 0)))
+        theirs.bullets = max(0, theirs.bullets + int(message.get("bullets", 0)))
+        theirs.restores = max(0, theirs.restores + int(message.get("restores", 0)))
+        theirs.bombs = max(0, theirs.bombs + int(message.get("bombs", 0)))
 
-        self.player.health += int(message.get("foe_health", 0))
-        self.player.points = max(0, self.player.points + int(message.get("foe_points", 0)))
-        self.player.bombs = max(0, self.player.bombs + int(message.get("foe_bombs", 0)))
+        ours.health += int(message.get("foe_health", 0))
+        ours.points = max(0, ours.points + int(message.get("foe_points", 0)))
+        ours.bombs = max(0, ours.bombs + int(message.get("foe_bombs", 0)))
 
-        return self._settle_bonus(log, self._describe_peer_bonus(message))
+        return self._settle_bonus(log, self._describe_peer_bonus(message, sender))
 
-    def _describe_peer_bonus(self, message: dict) -> str:
+    def _describe_peer_bonus(self, message: dict, sender: Side = Side.OPPONENT) -> str:
         """Say what the other player's notes came to, from this end.
 
         Composed here rather than sent, because a summary written where the
@@ -974,7 +987,8 @@ class Engine:
             plural = "" if singular == "health" or abs(n) == 1 else "s"
             return f"{abs(n)} {singular}{plural}"
 
-        name = self.opponent.name
+        picker, other = self._sides(sender)
+        name = picker.name
         theirs = [
             f"{'gains' if n > 0 else 'loses'} {amount(n, label)}"
             for label, n in (
@@ -986,8 +1000,11 @@ class Engine:
             )
             if n
         ]
+        # "you" only when it is us. At a ringside neither of them is.
+        us = "you" if self._first_person(sender.other) else other.name
+        verb_gain, verb_lose = ("gain", "lose") if us == "you" else ("gains", "loses")
         ours = [
-            f"{'gain' if n > 0 else 'lose'} {amount(n, label)}"
+            f"{verb_gain if n > 0 else verb_lose} {amount(n, label)}"
             for label, n in (
                 ("health", int(message.get("foe_health", 0))),
                 ("point", int(message.get("foe_points", 0))),
@@ -1002,7 +1019,7 @@ class Engine:
         if theirs:
             parts.append(f"{name} " + ", ".join(theirs))
         if ours:
-            parts.append("you " + ", ".join(ours))
+            parts.append(f"{us} " + ", ".join(ours))
         return f"From {name}'s notes: " + "; ".join(parts) + "."
 
     def _settle_bonus(self, log: EventLog, summary: str) -> list[Event]:

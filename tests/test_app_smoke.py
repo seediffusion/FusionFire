@@ -3085,6 +3085,156 @@ def test_the_commentary_names_both_fighters(ringside):
     assert "You " not in joined, f"the ringside was spoken to as a fighter: {joined}"
 
 
+def _ears(ctx):
+    """Every sound the fight hands out, however it is played.
+
+    Some go through the presenter with the commentary and some are played
+    outright, so both routes are watched or half the fight looks silent.
+    """
+    played: list[str] = []
+    from fusionfire.game.events import PlaySound
+
+    real_render = ctx.presenter.render
+
+    def render(events):
+        played.extend(
+            e.name or f"group {e.group}" for e in events if isinstance(e, PlaySound)
+        )
+        return real_render(events)
+
+    ctx.presenter.render = render
+    for name in ("play", "play_one_of"):
+        real = getattr(ctx.audio, name)
+
+        def direct(*args, _real=real, **kwargs):
+            if args:
+                played.append(str(args[0]))
+            return _real(*args, **kwargs)
+
+        setattr(ctx.audio, name, direct)
+    return played
+
+
+def test_a_seat_hears_the_punches(ringside):
+    """Not just the commentary. A fight you can only read is a fight you are
+    being told about rather than one you are at."""
+    ctx, _panel = ringside
+    played = _ears(ctx)
+
+    ctx._on_net_message({"type": "strike", "weapon": "gun", "outcome": "hit",
+                         "damage": 12, "source": "host"})
+    ctx._on_net_message({"type": "strike", "weapon": "whip", "outcome": "miss",
+                         "damage": 0, "source": "joiner"})
+    ctx._on_net_message({"type": "strike", "weapon": "bomb", "outcome": "hit",
+                         "damage": 9, "source": "joiner"})
+
+    assert "usergun" in played, played
+    assert "computerwhip" in played, played
+    assert "computerbomb" in played, played
+
+
+def test_a_seat_hears_them_take_it(ringside):
+    """The cry is the half of a landed hit that is not a number."""
+    ctx, _panel = ringside
+    played = _ears(ctx)
+
+    ctx._on_net_message({"type": "strike", "weapon": "gun", "outcome": "hit",
+                         "damage": 12, "source": "host"})
+    ctx._on_net_message({"type": "strike", "weapon": "gun", "outcome": "hit",
+                         "damage": 12, "source": "joiner"})
+
+    assert any("userhit" in sound for sound in played), played
+    assert any("computerhit" in sound for sound in played), played
+
+
+def test_a_seat_hears_the_taunts_and_the_laughing(ringside):
+    ctx, _panel = ringside
+    played = _ears(ctx)
+
+    ctx._on_net_message({"type": "laugh", "source": "joiner"})
+    ctx._on_net_message({"type": "comment", "key": "stuff", "source": "host"})
+
+    assert any("laugh" in sound for sound in played), played
+    assert any("comment_stuff" in sound for sound in played), played
+
+
+def test_a_seat_hears_both_health_alarms(ringside):
+    """A fighter gets these for the other one, their own health being the
+    loudest thing in their ears already. At a ringside neither is theirs, so
+    both fighters' alarms are worth hearing."""
+    ctx, _panel = ringside
+    ctx.engine.player.health = 100
+    ctx.engine.opponent.health = 100
+    played = _ears(ctx)
+
+    ctx._on_net_message({"type": "strike", "weapon": "gun", "outcome": "hit",
+                         "damage": 75, "source": "host"})
+    ctx._on_net_message({"type": "strike", "weapon": "gun", "outcome": "hit",
+                         "damage": 75, "source": "joiner"})
+
+    alarms = [sound for sound in played if "computerhealth" in sound]
+    assert len(alarms) >= 2, f"only {alarms} went off for two fighters on 25"
+
+
+def test_a_seat_sits_through_the_bonus_round(ringside, monkeypatch):
+    """The fighters go quiet for ten seconds while they pick. Without the
+    clock a watcher is left wondering whether the fight has stopped."""
+    ctx, _panel = ringside
+    played = _ears(ctx)
+    monkeypatch.setattr(ctx, "_later_by", lambda seconds, callback: callback())
+
+    ctx._on_net_message({"type": "bonus_start", "seconds": 10, "source": "host"})
+
+    assert "itemclock" in played, played
+    assert "itemtimeout" in played, played
+
+
+def test_a_bonus_result_reaches_a_seats_scoreboard(ringside):
+    """It used to reach nobody, so a seat's scoreboard quietly drifted away
+    from the fight it was supposed to be showing."""
+    ctx, _panel = ringside
+    ctx.engine.player.health = 60
+    ctx.engine.opponent.health = 60
+
+    ctx._on_net_message({
+        "type": "bonus", "source": "host",
+        "health": 15, "points": 2, "bullets": 0, "restores": 0, "bombs": 0,
+        "foe_health": -20, "foe_points": 0, "foe_bombs": 0,
+    })
+
+    assert ctx.engine.player.health == 75, "the picker's own notes went astray"
+    assert ctx.engine.opponent.health == 40, "the other fighter was not touched"
+    assert ctx.engine.player.points == 2
+
+
+def test_a_bonus_result_lands_on_whoever_picked_it(ringside):
+    """The same message from the other fighter has to land the other way up."""
+    ctx, _panel = ringside
+    ctx.engine.player.health = 60
+    ctx.engine.opponent.health = 60
+
+    ctx._on_net_message({
+        "type": "bonus", "source": "joiner",
+        "health": 15, "points": 0, "bullets": 0, "restores": 0, "bombs": 0,
+        "foe_health": -20, "foe_points": 0, "foe_bombs": 0,
+    })
+
+    assert ctx.engine.opponent.health == 75
+    assert ctx.engine.player.health == 40
+
+
+def test_a_seat_hears_the_right_fighter_go_down(ringside):
+    """Whoever fell, not whoever is nearer the microphone."""
+    ctx, _panel = ringside
+    played = _ears(ctx)
+    ctx.engine.player.health = 1
+
+    ctx._on_net_message({"type": "strike", "weapon": "gun", "outcome": "hit",
+                         "damage": 15, "source": "joiner"})
+
+    assert "userdie" in played, f"the host went down and we heard {played}"
+
+
 def test_a_seat_cannot_join_in(ringside):
     """Nothing it sends is carried anywhere, so the keys that would fight
     say so rather than pretending."""
